@@ -19,6 +19,8 @@ import mlx.core as mx
 import pytest
 from safetensors.mlx import save_file
 
+from tiny_duo_infer.config import ModelConfig
+from tiny_duo_infer.weights.llama_converter import convert
 from tiny_duo_infer.weights.loader import load_weights
 
 
@@ -146,6 +148,210 @@ def write_index(model_dir: Path, weight_map: dict[str, str]) -> None:
         json.dumps(index),
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# Llama converter tests (no model artifacts required)
+# ---------------------------------------------------------------------------
+
+def test_convert_maps_hf_keys_to_project_keys() -> None:
+    """All required Llama HF key patterns are translated to project keys."""
+    config = tiny_model_config()
+    converted = convert(make_hf_weights(config), config)
+
+    assert set(converted) == expected_project_keys(config)
+    assert "layers.0.input_norm.weight" in converted
+    assert "layers.0.attn.q_proj.weight" in converted
+    assert "layers.0.attn.k_proj.weight" in converted
+    assert "layers.0.attn.v_proj.weight" in converted
+    assert "layers.0.attn.o_proj.weight" in converted
+    assert "layers.0.post_attn_norm.weight" in converted
+    assert "layers.0.ffn.gate_proj.weight" in converted
+    assert "layers.0.ffn.up_proj.weight" in converted
+    assert "layers.0.ffn.down_proj.weight" in converted
+    assert "final_norm.weight" in converted
+
+
+def test_convert_validates_project_shapes_from_config() -> None:
+    """Converted tensors keep HF layout and match config-derived dimensions."""
+    config = tiny_model_config()
+    converted = convert(make_hf_weights(config), config)
+
+    assert converted["embed_tokens.weight"].shape == (config.vocab_size, config.d_model)
+    assert converted["layers.0.attn.q_proj.weight"].shape == (config.d_model, config.d_model)
+    assert converted["layers.0.attn.k_proj.weight"].shape == (
+        config.n_kv_heads * config.head_dim,
+        config.d_model,
+    )
+    assert converted["layers.0.ffn.gate_proj.weight"].shape == (
+        config.intermediate_size,
+        config.d_model,
+    )
+    assert converted["layers.0.ffn.down_proj.weight"].shape == (
+        config.d_model,
+        config.intermediate_size,
+    )
+    assert converted["final_norm.weight"].shape == (config.d_model,)
+
+
+def test_convert_reuses_embed_tokens_for_missing_tied_lm_head() -> None:
+    """When HF omits lm_head.weight, converter ties it to embed_tokens.weight."""
+    config = tiny_model_config()
+    hf_weights = make_hf_weights(config, include_lm_head=False)
+
+    converted = convert(hf_weights, config)
+
+    assert converted["lm_head.weight"] is converted["embed_tokens.weight"]
+
+
+def test_convert_uses_checkpoint_lm_head_when_present() -> None:
+    """If HF provides lm_head.weight explicitly, keep that tensor."""
+    config = tiny_model_config()
+    hf_weights = make_hf_weights(config, include_lm_head=True)
+
+    converted = convert(hf_weights, config)
+
+    assert converted["lm_head.weight"] is hf_weights["lm_head.weight"]
+
+
+def test_convert_reports_missing_required_key() -> None:
+    """Missing expected tensors should fail with the project key name."""
+    config = tiny_model_config()
+    hf_weights = make_hf_weights(config)
+    del hf_weights["model.layers.0.self_attn.q_proj.weight"]
+
+    with pytest.raises(ValueError, match="layers.0.attn.q_proj.weight"):
+        convert(hf_weights, config)
+
+
+def test_convert_reports_shape_mismatch() -> None:
+    """Wrong tensor shapes should fail at conversion time, not during forward."""
+    config = tiny_model_config()
+    hf_weights = make_hf_weights(config)
+    hf_weights["model.layers.0.self_attn.k_proj.weight"] = mx.zeros(
+        (config.d_model, config.d_model),
+        dtype=mx.float32,
+    )
+
+    with pytest.raises(ValueError, match="self_attn.k_proj.weight"):
+        convert(hf_weights, config)
+
+
+def test_convert_warns_and_ignores_unexpected_hf_key() -> None:
+    """Unexpected HF keys are reported but do not block conversion."""
+    config = tiny_model_config()
+    hf_weights = make_hf_weights(config)
+    hf_weights["model.layers.99.self_attn.q_proj.weight"] = mx.zeros(
+        (config.d_model, config.d_model),
+        dtype=mx.float32,
+    )
+
+    with pytest.warns(UserWarning, match="unexpected HF weight key"):
+        converted = convert(hf_weights, config)
+
+    assert "model.layers.99.self_attn.q_proj.weight" not in converted
+
+
+def tiny_model_config() -> ModelConfig:
+    """Return a tiny Llama-compatible config for converter unit tests."""
+    return ModelConfig(
+        d_model=8,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=2,
+        intermediate_size=16,
+        vocab_size=32,
+        max_seq_len=16,
+        rope_theta=500000.0,
+        rms_norm_eps=1e-5,
+    )
+
+
+def make_hf_weights(
+    config: ModelConfig,
+    *,
+    include_lm_head: bool = False,
+) -> dict[str, mx.array]:
+    """Build a complete synthetic HF Llama weight dict for a tiny config."""
+    weights: dict[str, mx.array] = {
+        "model.embed_tokens.weight": mx.zeros(
+            (config.vocab_size, config.d_model),
+            dtype=mx.float32,
+        ),
+        "model.norm.weight": mx.zeros((config.d_model,), dtype=mx.float32),
+    }
+
+    if include_lm_head:
+        weights["lm_head.weight"] = mx.ones(
+            (config.vocab_size, config.d_model),
+            dtype=mx.float32,
+        )
+
+    for layer_idx in range(config.n_layers):
+        prefix = f"model.layers.{layer_idx}"
+        weights.update(
+            {
+                f"{prefix}.input_layernorm.weight": mx.zeros(
+                    (config.d_model,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.q_proj.weight": mx.zeros(
+                    (config.d_model, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.k_proj.weight": mx.zeros(
+                    (config.n_kv_heads * config.head_dim, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.v_proj.weight": mx.zeros(
+                    (config.n_kv_heads * config.head_dim, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.o_proj.weight": mx.zeros(
+                    (config.d_model, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.post_attention_layernorm.weight": mx.zeros(
+                    (config.d_model,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.gate_proj.weight": mx.zeros(
+                    (config.intermediate_size, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.up_proj.weight": mx.zeros(
+                    (config.intermediate_size, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.down_proj.weight": mx.zeros(
+                    (config.d_model, config.intermediate_size),
+                    dtype=mx.float32,
+                ),
+            }
+        )
+
+    return weights
+
+
+def expected_project_keys(config: ModelConfig) -> set[str]:
+    """Return the complete project-key set expected after conversion."""
+    keys = {"embed_tokens.weight", "final_norm.weight", "lm_head.weight"}
+    for layer_idx in range(config.n_layers):
+        prefix = f"layers.{layer_idx}"
+        keys.update(
+            {
+                f"{prefix}.input_norm.weight",
+                f"{prefix}.attn.q_proj.weight",
+                f"{prefix}.attn.k_proj.weight",
+                f"{prefix}.attn.v_proj.weight",
+                f"{prefix}.attn.o_proj.weight",
+                f"{prefix}.post_attn_norm.weight",
+                f"{prefix}.ffn.gate_proj.weight",
+                f"{prefix}.ffn.up_proj.weight",
+                f"{prefix}.ffn.down_proj.weight",
+            }
+        )
+    return keys
 
 
 # ---------------------------------------------------------------------------
