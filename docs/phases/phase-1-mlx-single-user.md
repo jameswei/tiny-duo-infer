@@ -2,7 +2,7 @@
 
 **Status:** Draft  
 **Authors:** Claude Code + Codex (merged)  
-**Based on:** `docs/refined-plan_codex.md`  
+**Based on:** `docs/refined-plan.md`  
 **Date:** 2026-05-25
 
 ---
@@ -235,7 +235,7 @@ Weights are randomly initialised from this config using `mx.random.normal`.
 ## Package Layout
 
 Phase 1 creates only the modules needed for M1.0–M1.8. The layout is kept
-compatible with the full end-state structure from `docs/refined-plan_codex.md`.
+compatible with the full end-state structure from `docs/refined-plan.md`.
 
 ```text
 tiny_duo_infer/

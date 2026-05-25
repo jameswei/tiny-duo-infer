@@ -154,7 +154,7 @@ tests/
 
 docs/
   architecture.md     — this file
-  refined-plan_codex.md
+  refined-plan.md
   agent-guidelines.md
   phases/
     phase-1-mlx-single-user.md

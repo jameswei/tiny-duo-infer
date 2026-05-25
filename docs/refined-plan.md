@@ -445,7 +445,7 @@ The project should keep documentation close to implementation.
 
 Important docs:
 
-- `docs/refined-plan_codex.md`: this consolidated plan
+- `docs/refined-plan.md`: this consolidated plan
 - `docs/agent-guidelines.md`: multi-agent collaboration contract
 - `docs/architecture.md`: future merged architecture source of truth
 - `docs/phases/phase-1-mlx-single-user.md`: phase-1 implementation contract

@@ -17,7 +17,7 @@ Use this source-of-truth order:
    implementation contract, milestone scope, and completion criteria.
 2. `docs/architecture.md`: active architecture reference and subsystem
    boundaries.
-3. `docs/refined-plan_codex.md`: settled project direction, roadmap, and
+3. `docs/refined-plan.md`: settled project direction, roadmap, and
    cross-review decisions.
 4. `docs/adr/*.md`: architecture decisions that should not be silently changed.
 5. Code and tests: implementation truth.
