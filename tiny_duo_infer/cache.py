@@ -28,6 +28,8 @@ KV memory in fixed-size pages rather than one contiguous pre-allocated buffer.
 
 from __future__ import annotations
 
+import mlx.core as mx
+
 
 class KVCache:
     """
@@ -56,15 +58,22 @@ class KVCache:
         head_dim: int,
     ) -> None:
         """Allocate zeroed K/V buffers for all layers."""
-        raise NotImplementedError
+        self._n_layers = n_layers
+        self._n_kv_heads = n_kv_heads
+        self._max_seq_len = max_seq_len
+        self._head_dim = head_dim
+        self._current_len = 0
+        shape = (1, n_kv_heads, max_seq_len, head_dim)
+        self._keys: list[mx.array] = [mx.zeros(shape) for _ in range(n_layers)]
+        self._values: list[mx.array] = [mx.zeros(shape) for _ in range(n_layers)]
 
     def update(
         self,
         layer_idx: int,
-        new_k: any,
-        new_v: any,
+        new_k: mx.array,
+        new_v: mx.array,
         position: int,
-    ) -> tuple[any, any]:
+    ) -> tuple[mx.array, mx.array]:
         """
         Write new_k/new_v into the pre-allocated buffer starting at `position`.
         Returns the valid K/V slice: [:, :, :position + new_len, :].
@@ -87,7 +96,14 @@ class KVCache:
         Returns:
             (k_cache, v_cache): valid slices (1, n_kv_heads, position+new_len, head_dim).
         """
-        raise NotImplementedError
+        new_len = new_k.shape[2]
+        self._keys[layer_idx][:, :, position : position + new_len, :] = new_k
+        self._values[layer_idx][:, :, position : position + new_len, :] = new_v
+        valid_end = position + new_len
+        return (
+            self._keys[layer_idx][:, :, :valid_end, :],
+            self._values[layer_idx][:, :, :valid_end, :],
+        )
 
     def advance(self, n_tokens: int) -> None:
         """
@@ -101,7 +117,7 @@ class KVCache:
         During prefill: advance(prompt_len).
         During decode:  advance(1).
         """
-        raise NotImplementedError
+        self._current_len += n_tokens
 
     @property
     def current_len(self) -> int:
@@ -110,8 +126,12 @@ class KVCache:
         Reflects the state after the last advance() call.
         All layers share this single value — it does not increment per layer.
         """
-        raise NotImplementedError
+        return self._current_len
 
     def reset(self) -> None:
         """Zero out all buffers and reset current_len to 0. Call between requests."""
-        raise NotImplementedError
+        shape = (1, self._n_kv_heads, self._max_seq_len, self._head_dim)
+        for i in range(self._n_layers):
+            self._keys[i] = mx.zeros(shape)
+            self._values[i] = mx.zeros(shape)
+        self._current_len = 0

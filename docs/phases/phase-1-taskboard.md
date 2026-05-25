@@ -34,8 +34,8 @@ This taskboard should stay aligned with that spec.
 | P1-T02 | M1.1 | Tokenizer wrapper | P1-T00 | done | cc | encode/decode and BOS/EOS tests pass | reviewed by codex; 25 unit tests pass, 2 slow skipped; no findings |
 | P1-T03 | M1.2 | Safetensors loader | P1-T00 | done | codex | single/sharded safetensors load | reviewed by cc; 8 unit tests pass; no findings |
 | P1-T04 | M1.2 | Llama weight converter | P1-T01, P1-T03 | done | codex | HF keys map, tied embeddings handled | reviewed by cc; 15 unit tests pass, 1 skipped; no findings |
-| P1-T05 | M1.3 | Base module helpers | P1-T01 | review | cc | `Module`, `Linear`, `Embedding` tested | 16 unit tests pass; covers routing, shape, values, load_weights |
-| P1-T06 | M1.3 | KV cache | P1-T01 | in_progress | cc | preallocated `update()`/`advance()` tests pass | high-risk |
+| P1-T05 | M1.3 | Base module helpers | P1-T01 | done | cc | `Module`, `Linear`, `Embedding` tested | reviewed by codex; 16 unit tests pass; no findings |
+| P1-T06 | M1.3 | KV cache | P1-T01 | review | cc | preallocated `update()`/`advance()` tests pass | 18 unit tests pass; covers prefill, decode, multi-layer, reset |
 | P1-T07 | M1.3 | RMSNorm | P1-T05 | todo | unassigned | manual formula tests pass | |
 | P1-T08 | M1.3 | RoPE | P1-T05 | todo | unassigned | manual rotation tests pass | |
 | P1-T09 | M1.3 | SwiGLU FFN | P1-T05 | todo | unassigned | shape and gate/up tests pass | |
