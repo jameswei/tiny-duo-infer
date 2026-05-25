@@ -95,8 +95,47 @@ class KVCache:
 
         Returns:
             (k_cache, v_cache): valid slices (1, n_kv_heads, position+new_len, head_dim).
+
+        Raises:
+            ValueError: if layer_idx or position are out of bounds, or if
+                        new_k/new_v have incompatible shapes.
         """
+        if not (0 <= layer_idx < self._n_layers):
+            raise ValueError(
+                f"layer_idx {layer_idx} out of range [0, {self._n_layers})"
+            )
+        if position < 0:
+            raise ValueError(f"position must be >= 0, got {position}")
+        if new_k.ndim != 4 or new_v.ndim != 4:
+            raise ValueError(
+                f"new_k and new_v must be rank-4, got {new_k.ndim} and {new_v.ndim}"
+            )
+        if new_k.shape[0] != 1 or new_v.shape[0] != 1:
+            raise ValueError(
+                f"batch dimension must be 1, got new_k.shape[0]={new_k.shape[0]}, "
+                f"new_v.shape[0]={new_v.shape[0]}"
+            )
+        if new_k.shape[1] != self._n_kv_heads or new_v.shape[1] != self._n_kv_heads:
+            raise ValueError(
+                f"expected n_kv_heads={self._n_kv_heads}, "
+                f"got new_k.shape[1]={new_k.shape[1]}, new_v.shape[1]={new_v.shape[1]}"
+            )
+        if new_k.shape[2] != new_v.shape[2]:
+            raise ValueError(
+                f"new_k and new_v must have the same sequence length, "
+                f"got {new_k.shape[2]} and {new_v.shape[2]}"
+            )
+        if new_k.shape[3] != self._head_dim or new_v.shape[3] != self._head_dim:
+            raise ValueError(
+                f"expected head_dim={self._head_dim}, "
+                f"got new_k.shape[3]={new_k.shape[3]}, new_v.shape[3]={new_v.shape[3]}"
+            )
         new_len = new_k.shape[2]
+        if position + new_len > self._max_seq_len:
+            raise ValueError(
+                f"write would exceed max_seq_len={self._max_seq_len}: "
+                f"position={position}, new_len={new_len}"
+            )
         self._keys[layer_idx][:, :, position : position + new_len, :] = new_k
         self._values[layer_idx][:, :, position : position + new_len, :] = new_v
         valid_end = position + new_len
@@ -116,7 +155,17 @@ class KVCache:
 
         During prefill: advance(prompt_len).
         During decode:  advance(1).
+
+        Raises:
+            ValueError: if n_tokens <= 0 or advancing would exceed max_seq_len.
         """
+        if n_tokens <= 0:
+            raise ValueError(f"n_tokens must be > 0, got {n_tokens}")
+        if self._current_len + n_tokens > self._max_seq_len:
+            raise ValueError(
+                f"advance({n_tokens}) would exceed max_seq_len={self._max_seq_len}: "
+                f"current_len={self._current_len}"
+            )
         self._current_len += n_tokens
 
     @property

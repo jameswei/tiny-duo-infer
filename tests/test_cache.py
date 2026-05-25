@@ -20,6 +20,7 @@ Test categories:
 from __future__ import annotations
 
 import mlx.core as mx
+import pytest
 
 from tiny_duo_infer.cache import KVCache
 
@@ -244,3 +245,102 @@ def test_reset_zeros_all_layers():
     for layer in range(N_LAYERS):
         mx.eval(cache._keys[layer])
         assert mx.all(cache._keys[layer] == 0).item()
+
+
+# ---------------------------------------------------------------------------
+# Input validation — update() bounds and shape checks
+# ---------------------------------------------------------------------------
+
+def test_update_rejects_negative_layer_idx():
+    cache = make_cache()
+    k, v = filled_kv(1)
+    with pytest.raises(ValueError, match="layer_idx"):
+        cache.update(-1, k, v, position=0)
+
+
+def test_update_rejects_layer_idx_too_large():
+    cache = make_cache()
+    k, v = filled_kv(1)
+    with pytest.raises(ValueError, match="layer_idx"):
+        cache.update(N_LAYERS, k, v, position=0)
+
+
+def test_update_rejects_negative_position():
+    cache = make_cache()
+    k, v = filled_kv(1)
+    with pytest.raises(ValueError, match="position"):
+        cache.update(0, k, v, position=-1)
+
+
+def test_update_rejects_write_past_max_seq_len():
+    cache = make_cache()
+    k, v = filled_kv(1)
+    with pytest.raises(ValueError, match="max_seq_len"):
+        cache.update(0, k, v, position=MAX_SEQ_LEN)  # position+1 > MAX_SEQ_LEN
+
+
+def test_update_rejects_mismatched_new_k_new_v_lengths():
+    """new_k and new_v must have the same sequence length (shape[2])."""
+    cache = make_cache()
+    shape_k = (1, N_KV_HEADS, 2, HEAD_DIM)
+    shape_v = (1, N_KV_HEADS, 1, HEAD_DIM)
+    with pytest.raises(ValueError, match="same sequence length"):
+        cache.update(0, mx.zeros(shape_k), mx.zeros(shape_v), position=0)
+
+
+def test_update_rejects_wrong_n_kv_heads():
+    cache = make_cache()
+    bad_shape = (1, N_KV_HEADS + 1, 1, HEAD_DIM)
+    with pytest.raises(ValueError, match="n_kv_heads"):
+        cache.update(0, mx.zeros(bad_shape), mx.zeros(bad_shape), position=0)
+
+
+def test_update_rejects_wrong_head_dim():
+    cache = make_cache()
+    bad_shape = (1, N_KV_HEADS, 1, HEAD_DIM + 1)
+    with pytest.raises(ValueError, match="head_dim"):
+        cache.update(0, mx.zeros(bad_shape), mx.zeros(bad_shape), position=0)
+
+
+def test_update_rejects_non_rank4_input():
+    cache = make_cache()
+    bad = mx.zeros((N_KV_HEADS, 1, HEAD_DIM))  # rank 3
+    with pytest.raises(ValueError, match="rank-4"):
+        cache.update(0, bad, bad, position=0)
+
+
+def test_update_rejects_batch_size_not_one():
+    cache = make_cache()
+    bad = mx.zeros((2, N_KV_HEADS, 1, HEAD_DIM))  # batch=2
+    with pytest.raises(ValueError, match="batch dimension"):
+        cache.update(0, bad, bad, position=0)
+
+
+# ---------------------------------------------------------------------------
+# Input validation — advance() bounds checks
+# ---------------------------------------------------------------------------
+
+def test_advance_rejects_zero():
+    with pytest.raises(ValueError, match="n_tokens"):
+        make_cache().advance(0)
+
+
+def test_advance_rejects_negative():
+    with pytest.raises(ValueError, match="n_tokens"):
+        make_cache().advance(-5)
+
+
+def test_advance_rejects_exceeding_max_seq_len():
+    cache = make_cache()
+    with pytest.raises(ValueError, match="max_seq_len"):
+        cache.advance(MAX_SEQ_LEN + 1)
+
+
+def test_advance_rejects_cumulative_overflow():
+    """Advancing to exactly max_seq_len is fine; going one more must fail."""
+    cache = make_cache()
+    cache.advance(MAX_SEQ_LEN - 1)
+    cache.advance(1)  # fills the cache exactly — should succeed
+    assert cache.current_len == MAX_SEQ_LEN
+    with pytest.raises(ValueError, match="max_seq_len"):
+        cache.advance(1)  # one beyond capacity
