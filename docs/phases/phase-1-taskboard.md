@@ -1,0 +1,69 @@
+# Phase 1 Taskboard
+
+This file tracks Phase 1 implementation tasks, dependencies, ownership, and
+status in one lightweight table.
+
+The active implementation contract is `docs/phases/phase-1-mlx-single-user.md`.
+This taskboard should stay aligned with that spec.
+
+## Status Values
+
+- `todo`: not started
+- `in_progress`: actively being implemented
+- `review`: implementation is ready for review and verification
+- `blocked`: cannot proceed; blocker must be written in `Notes`
+- `done`: reviewed, tested, and accepted
+
+## Update Rules
+
+- Set `Status` to `in_progress` before starting work.
+- Set `Status` to `review` after implementation and local tests.
+- Set `Status` to `done` only after review and required tests pass.
+- Use `blocked` only with a concrete blocker in `Notes`.
+- Keep `Owner` as an agent/person name or `unassigned`.
+- Do not change task IDs after creation.
+- Update `Notes` with skipped tests, hardware limits, or follow-up work.
+- Keep acceptance criteria short; detailed requirements belong in the phase spec.
+
+## Taskboard
+
+| ID | Milestone | Task | Depends On | Status | Owner | Acceptance | Notes |
+|---|---|---|---|---|---|---|---|
+| P1-T00 | M1.0 | Project scaffolding | none | todo | unassigned | `uv sync`, import works, pytest runs | |
+| P1-T01 | M1.1 | Config loader | P1-T00 | todo | unassigned | config fields parsed and tested | |
+| P1-T02 | M1.1 | Tokenizer wrapper | P1-T00 | todo | unassigned | encode/decode and BOS/EOS tests pass | |
+| P1-T03 | M1.2 | Safetensors loader | P1-T00 | todo | unassigned | single/sharded safetensors load | |
+| P1-T04 | M1.2 | Llama weight converter | P1-T01, P1-T03 | todo | unassigned | HF keys map, tied embeddings handled | |
+| P1-T05 | M1.3 | Base module helpers | P1-T01 | todo | unassigned | `Module`, `Linear`, `Embedding` tested | |
+| P1-T06 | M1.3 | KV cache | P1-T01 | todo | unassigned | preallocated `update()`/`advance()` tests pass | high-risk |
+| P1-T07 | M1.3 | RMSNorm | P1-T05 | todo | unassigned | manual formula tests pass | |
+| P1-T08 | M1.3 | RoPE | P1-T05 | todo | unassigned | manual rotation tests pass | |
+| P1-T09 | M1.3 | SwiGLU FFN | P1-T05 | todo | unassigned | shape and gate/up tests pass | |
+| P1-T10 | M1.3 | GQA attention | P1-T06, P1-T08 | todo | unassigned | GQA axis, mask, cache tests pass | high-risk |
+| P1-T11 | M1.4 | Llama model assembly | P1-T07, P1-T09, P1-T10 | todo | unassigned | tiny model forward shape passes | |
+| P1-T12 | M1.5 | Prefill path | P1-T02, P1-T04, P1-T11 | todo | unassigned | cache filled, final logits returned | |
+| P1-T13 | M1.6 | Greedy decode loop | P1-T12 | todo | unassigned | EOS/max-token stop, deterministic | |
+| P1-T14 | M1.6 | CLI | P1-T13 | todo | unassigned | CLI generates local text | |
+| P1-T15 | M1.7 | MLX eval placement | P1-T13 | todo | unassigned | `mx.eval()` placement documented | |
+| P1-T16 | M1.7 | Benchmark script | P1-T13 | todo | unassigned | tokens/sec and KV memory reported | |
+| P1-T17 | M1.8 | Sampling extension | P1-T13 | todo | unassigned | temp/top-k/top-p tests pass | optional |
+| P1-T18 | Phase close | Handoff and verification | P1-T14, P1-T15, P1-T16 | todo | unassigned | handoff complete, tests recorded | |
+
+## Review-Sensitive Tasks
+
+These tasks require architecture/code review before being marked `done`:
+
+- `P1-T06`: KV cache, especially `current_len`, `update()`, and `advance()`
+  semantics.
+- `P1-T10`: GQA attention, especially KV-head repeat axis, causal masking, and
+  cache interaction.
+- `P1-T12`: prefill, especially cache fill positions and final-position logits.
+- `P1-T13`: decode loop, especially cache position increments, EOS handling, and
+  `max_new_tokens` stopping.
+
+## Minimum Phase 1 Completion
+
+Minimum Phase 1 completion requires `P1-T00` through `P1-T16` plus `P1-T18`.
+
+`P1-T17` is an M1.8 extension. It is useful, but not required for minimum Phase
+1 completion unless the phase spec is updated later.
