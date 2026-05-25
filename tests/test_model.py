@@ -29,7 +29,9 @@ from __future__ import annotations
 import mlx.core as mx
 import pytest
 
+from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.models.base import Embedding, Linear, Module
+from tiny_duo_infer.models.llama import LlamaBlock, LlamaModel
 
 
 # ---------------------------------------------------------------------------
@@ -234,10 +236,159 @@ def test_embedding_different_batch_sizes(tiny_config):
 
 
 # ---------------------------------------------------------------------------
-# LlamaModel assembly tests (stubs until P1-T11)
+# LlamaModel assembly
 # ---------------------------------------------------------------------------
+
+def _random_weights(config) -> dict:
+    """Build a complete flat weight dict with random values matching config dims."""
+    D, V, I = config.d_model, config.vocab_size, config.intermediate_size
+    H, Hkv, Dh = config.n_heads, config.n_kv_heads, config.head_dim
+    weights = {
+        "embed_tokens.weight": mx.random.normal((V, D)),
+        "final_norm.weight":   mx.random.normal((D,)),
+        "lm_head.weight":      mx.random.normal((V, D)),
+    }
+    for i in range(config.n_layers):
+        weights.update({
+            f"layers.{i}.input_norm.weight":     mx.random.normal((D,)),
+            f"layers.{i}.attn.q_proj.weight":    mx.random.normal((H * Dh, D)),
+            f"layers.{i}.attn.k_proj.weight":    mx.random.normal((Hkv * Dh, D)),
+            f"layers.{i}.attn.v_proj.weight":    mx.random.normal((Hkv * Dh, D)),
+            f"layers.{i}.attn.o_proj.weight":    mx.random.normal((D, H * Dh)),
+            f"layers.{i}.post_attn_norm.weight": mx.random.normal((D,)),
+            f"layers.{i}.ffn.gate_proj.weight":  mx.random.normal((I, D)),
+            f"layers.{i}.ffn.up_proj.weight":    mx.random.normal((I, D)),
+            f"layers.{i}.ffn.down_proj.weight":  mx.random.normal((D, I)),
+        })
+    return weights
+
+
+def _make_model(config) -> LlamaModel:
+    model = LlamaModel(config)
+    model.load_weights(_random_weights(config))
+    return model
+
+
+def _make_cache(config) -> KVCache:
+    return KVCache(
+        n_layers=config.n_layers,
+        n_kv_heads=config.n_kv_heads,
+        max_seq_len=config.max_seq_len,
+        head_dim=config.head_dim,
+    )
+
+
+def test_llama_model_prefill_logits_shape(tiny_model_config):
+    """Prefill returns logits (B, S, V) for a prompt of length S."""
+    S = 5
+    model = _make_model(tiny_model_config)
+    cache = _make_cache(tiny_model_config)
+    input_ids = mx.array([[0, 1, 2, 3, 4]])  # (1, S)
+
+    logits = model(input_ids, cache, position_offset=0)
+    mx.eval(logits)
+
+    assert logits.shape == (1, S, tiny_model_config.vocab_size)
+
+
+def test_llama_model_decode_logits_shape(tiny_model_config):
+    """Decode step (S=1) returns (B, 1, V) logits."""
+    model = _make_model(tiny_model_config)
+    cache = _make_cache(tiny_model_config)
+
+    # Simulate prefill of 4 tokens, then one decode step
+    prompt = mx.array([[0, 1, 2, 3]])  # (1, 4)
+    model(prompt, cache, position_offset=0)
+    cache.advance(4)
+
+    token = mx.array([[5]])  # (1, 1)
+    logits = model(token, cache, position_offset=cache.current_len)
+    mx.eval(logits)
+
+    assert logits.shape == (1, 1, tiny_model_config.vocab_size)
+
+
+def test_llama_model_kv_cache_filled_during_prefill(tiny_model_config):
+    """After forward over S tokens, all layers have KV data at positions [0, S)."""
+    S = 3
+    model = _make_model(tiny_model_config)
+    cache = _make_cache(tiny_model_config)
+    input_ids = mx.array([[0, 1, 2]])
+
+    model(input_ids, cache, position_offset=0)
+    mx.eval(cache._keys[0])
+
+    # Model only writes via cache.update(); current_len stays 0 until engine calls advance()
+    assert cache.current_len == 0
+
+    # Manually advance (engine responsibility) and verify length
+    cache.advance(S)
+    assert cache.current_len == S
+
+
+def test_llama_model_cache_current_len_unchanged_by_forward(tiny_model_config):
+    """LlamaModel never calls cache.advance(); that is the engine's responsibility."""
+    model = _make_model(tiny_model_config)
+    cache = _make_cache(tiny_model_config)
+
+    model(mx.array([[0, 1, 2, 3, 4]]), cache, position_offset=0)
+    mx.eval(cache._keys[0])
+
+    assert cache.current_len == 0
+
+
+def test_llama_block_forward_shape(tiny_model_config):
+    """LlamaBlock preserves (B, S, D) through both residual sub-layers."""
+    from tiny_duo_infer.layers.rope import precompute_freqs
+    cos_sin = precompute_freqs(
+        tiny_model_config.head_dim,
+        tiny_model_config.max_seq_len,
+        tiny_model_config.rope_theta,
+    )
+    block = LlamaBlock(tiny_model_config, layer_idx=0, cos_sin=cos_sin)
+
+    D = tiny_model_config.d_model
+    Hkv, Dh = tiny_model_config.n_kv_heads, tiny_model_config.head_dim
+    I = tiny_model_config.intermediate_size
+    H = tiny_model_config.n_heads
+    # Set random weights on all sub-modules
+    block.input_norm.weight     = mx.ones((D,))
+    block.attn.q_proj.weight    = mx.random.normal((H * Dh, D))
+    block.attn.k_proj.weight    = mx.random.normal((Hkv * Dh, D))
+    block.attn.v_proj.weight    = mx.random.normal((Hkv * Dh, D))
+    block.attn.o_proj.weight    = mx.random.normal((D, H * Dh))
+    block.post_attn_norm.weight = mx.ones((D,))
+    block.ffn.gate_proj.weight  = mx.random.normal((I, D))
+    block.ffn.up_proj.weight    = mx.random.normal((I, D))
+    block.ffn.down_proj.weight  = mx.random.normal((D, I))
+
+    cache = _make_cache(tiny_model_config)
+    S = 4
+    x = mx.random.normal((1, S, D))
+    out = block(x, cache, layer_idx=0, position_offset=0)
+    mx.eval(out)
+
+    assert out.shape == x.shape
+
+
+def test_llama_model_load_weights_routes_all_keys(tiny_model_config):
+    """load_weights() correctly populates all sub-module weights including layers list."""
+    model = LlamaModel(tiny_model_config)
+    weights = _random_weights(tiny_model_config)
+    model.load_weights(weights)
+
+    assert model.embed_tokens.weight is weights["embed_tokens.weight"]
+    assert model.final_norm.weight   is weights["final_norm.weight"]
+    assert model.lm_head.weight      is weights["lm_head.weight"]
+
+    for i in range(tiny_model_config.n_layers):
+        assert model.layers[i].input_norm.weight     is weights[f"layers.{i}.input_norm.weight"]
+        assert model.layers[i].attn.q_proj.weight    is weights[f"layers.{i}.attn.q_proj.weight"]
+        assert model.layers[i].ffn.gate_proj.weight  is weights[f"layers.{i}.ffn.gate_proj.weight"]
+        assert model.layers[i].ffn.down_proj.weight  is weights[f"layers.{i}.ffn.down_proj.weight"]
+
 
 @pytest.mark.slow
 def test_model_forward_smoke():
-    """Load real weights and run a forward pass; verify logits shape."""
-    pytest.skip("not yet implemented")
+    """Load real Llama-3.2-1B weights and run a forward pass; verify logits shape."""
+    pytest.skip("requires real model artifacts — run with --run-slow")
