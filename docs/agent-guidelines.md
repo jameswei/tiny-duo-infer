@@ -15,11 +15,11 @@ Use this source-of-truth order:
 
 1. Active phase spec, currently `docs/phases/phase-1-mlx-single-user.md`:
    implementation contract, milestone scope, and completion criteria.
-2. `docs/refined-plan_codex.md`: settled project direction, roadmap, and
+2. `docs/architecture.md`: active architecture reference and subsystem
+   boundaries.
+3. `docs/refined-plan_codex.md`: settled project direction, roadmap, and
    cross-review decisions.
-3. `docs/adr/*.md`: architecture decisions that should not be silently changed.
-4. `docs/architecture.md`: architecture overview and subsystem boundaries, once
-   created.
+4. `docs/adr/*.md`: architecture decisions that should not be silently changed.
 5. Code and tests: implementation truth.
 6. Earlier proposal and review docs: historical context only, not current
    implementation contracts.
