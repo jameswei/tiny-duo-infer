@@ -30,8 +30,14 @@ Causal mask:
 
 from __future__ import annotations
 
+import math
+
+import mlx.core as mx
+
+from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig
-from tiny_duo_infer.models.base import Module
+from tiny_duo_infer.layers.rope import apply_rope
+from tiny_duo_infer.models.base import Linear, Module
 
 
 class LlamaAttention(Module):
@@ -50,21 +56,32 @@ class LlamaAttention(Module):
         cos_sin: (cos_table, sin_table) from precompute_freqs — shared ref.
     """
 
-    def __init__(self, config: ModelConfig, cos_sin: tuple[any, any]) -> None:
+    def __init__(self, config: ModelConfig, cos_sin: tuple[mx.array, mx.array]) -> None:
         """
         Args:
             config:  model config (n_heads, n_kv_heads, d_model, head_dim).
             cos_sin: (cos_table, sin_table) precomputed by LlamaModel at init.
         """
-        raise NotImplementedError
+        self.config = config
+        self.n_heads = config.n_heads
+        self.n_kv_heads = config.n_kv_heads
+        self.n_groups = config.n_groups
+        self.head_dim = config.head_dim
+        self.d_model = config.d_model
+        self.cos_sin = cos_sin
+
+        self.q_proj = Linear(config.d_model, config.n_heads * config.head_dim)
+        self.k_proj = Linear(config.d_model, config.n_kv_heads * config.head_dim)
+        self.v_proj = Linear(config.d_model, config.n_kv_heads * config.head_dim)
+        self.o_proj = Linear(config.n_heads * config.head_dim, config.d_model)
 
     def forward(
         self,
-        x: any,
-        cache: any,
+        x: mx.array,
+        cache: KVCache,
         layer_idx: int,
         position_offset: int,
-    ) -> any:
+    ) -> mx.array:
         """
         Args:
             x:               (B, S, D) input hidden states.
@@ -75,4 +92,55 @@ class LlamaAttention(Module):
         Returns:
             (B, S, D) attention output.
         """
-        raise NotImplementedError
+        B, S, _D = x.shape
+        H, Hkv, Dh = self.n_heads, self.n_kv_heads, self.head_dim
+
+        q = self.q_proj(x).reshape(B, S, H, Dh)      # (B, S, H, Dh)
+        k = self.k_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
+        v = self.v_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
+
+        cos, sin = self.cos_sin
+        q = apply_rope(q, cos, sin, offset=position_offset)
+        k = apply_rope(k, cos, sin, offset=position_offset)
+
+        # KV cache stores transposed K/V as (B, Hkv, T, Dh). update() writes
+        # this layer's new positions and returns the full valid prefix.
+        new_k = mx.transpose(k, (0, 2, 1, 3))  # (B, Hkv, S, Dh)
+        new_v = mx.transpose(v, (0, 2, 1, 3))  # (B, Hkv, S, Dh)
+        k_full, v_full = cache.update(layer_idx, new_k, new_v, position_offset)
+        T = k_full.shape[2]
+
+        q_t = mx.transpose(q, (0, 2, 1, 3))  # (B, H, S, Dh)
+
+        # GQA expands each KV head along the head axis so every group of query
+        # heads attends to the KV head it shares in the original Llama layout.
+        k_expanded = mx.repeat(k_full, repeats=self.n_groups, axis=1)  # (B, H, T, Dh)
+        v_expanded = mx.repeat(v_full, repeats=self.n_groups, axis=1)  # (B, H, T, Dh)
+
+        scores = (q_t @ mx.transpose(k_expanded, (0, 1, 3, 2))) / math.sqrt(Dh)
+        scores = _apply_causal_mask(scores, position_offset)
+        weights = mx.softmax(scores, axis=-1)  # (B, H, S, T)
+
+        attended = weights @ v_expanded  # (B, H, S, Dh)
+        merged = mx.transpose(attended, (0, 2, 1, 3)).reshape(B, S, H * Dh)
+        return self.o_proj(merged)
+
+
+def _apply_causal_mask(scores: mx.array, position_offset: int) -> mx.array:
+    """
+    Mask attention scores so each query position sees only past/current keys.
+
+    Args:
+        scores:          (B, H, S, T) raw attention scores.
+        position_offset: absolute position of the first query token.
+
+    Returns:
+        (B, H, S, T) scores with future-key positions set to a large negative
+        value before softmax.
+    """
+    _B, _H, S, T = scores.shape
+    query_positions = position_offset + mx.arange(S)  # (S,)
+    key_positions = mx.arange(T)                      # (T,)
+    future_mask = key_positions[None, :] > query_positions[:, None]  # (S, T)
+    future_mask = future_mask.reshape(1, 1, S, T)
+    return mx.where(future_mask, mx.array(-1e9, dtype=scores.dtype), scores)

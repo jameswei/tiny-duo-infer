@@ -16,6 +16,9 @@ import math
 import mlx.core as mx
 import pytest
 
+from tiny_duo_infer.cache import KVCache
+from tiny_duo_infer.config import ModelConfig
+from tiny_duo_infer.layers.attention import LlamaAttention, _apply_causal_mask
 from tiny_duo_infer.layers.feedforward import SwiGLUFFN
 from tiny_duo_infer.layers.normalization import RMSNorm
 from tiny_duo_infer.layers.rope import apply_rope, precompute_freqs
@@ -221,7 +224,159 @@ def test_apply_rope_decode_uses_correct_position(tiny_config):
 # LlamaAttention
 # ---------------------------------------------------------------------------
 
-# TODO M1.3: implement attention tests once attention.py is implemented.
+def _attention_with_random_weights(config: ModelConfig) -> LlamaAttention:
+    """Create a LlamaAttention layer with synthetic projection weights."""
+    cos_sin = precompute_freqs(config.head_dim, config.max_seq_len, config.rope_theta)
+    attn = LlamaAttention(config, cos_sin)
+    attn.q_proj.weight = mx.random.normal((config.n_heads * config.head_dim, config.d_model))
+    attn.k_proj.weight = mx.random.normal((config.n_kv_heads * config.head_dim, config.d_model))
+    attn.v_proj.weight = mx.random.normal((config.n_kv_heads * config.head_dim, config.d_model))
+    attn.o_proj.weight = mx.random.normal((config.d_model, config.n_heads * config.head_dim))
+    return attn
+
+
+def test_attention_init_creates_projection_modules(tiny_model_config):
+    """LlamaAttention exposes Q/K/V/O Linear projections with GQA dimensions."""
+    cos_sin = precompute_freqs(
+        tiny_model_config.head_dim,
+        tiny_model_config.max_seq_len,
+        tiny_model_config.rope_theta,
+    )
+    attn = LlamaAttention(tiny_model_config, cos_sin)
+
+    assert isinstance(attn.q_proj, Linear)
+    assert isinstance(attn.k_proj, Linear)
+    assert isinstance(attn.v_proj, Linear)
+    assert isinstance(attn.o_proj, Linear)
+    assert attn.q_proj.out_features == tiny_model_config.n_heads * tiny_model_config.head_dim
+    assert attn.k_proj.out_features == tiny_model_config.n_kv_heads * tiny_model_config.head_dim
+    assert attn.v_proj.out_features == tiny_model_config.n_kv_heads * tiny_model_config.head_dim
+    assert attn.o_proj.in_features == tiny_model_config.n_heads * tiny_model_config.head_dim
+
+
+def test_attention_forward_prefill_shape_and_cache_write(tiny_model_config):
+    """Prefill writes S K/V positions but leaves cache.current_len unchanged."""
+    attn = _attention_with_random_weights(tiny_model_config)
+    cache = KVCache(
+        n_layers=tiny_model_config.n_layers,
+        n_kv_heads=tiny_model_config.n_kv_heads,
+        max_seq_len=tiny_model_config.max_seq_len,
+        head_dim=tiny_model_config.head_dim,
+    )
+    S = 4
+    x = mx.random.normal((1, S, tiny_model_config.d_model))
+
+    out = attn(x, cache, layer_idx=0, position_offset=0)
+    mx.eval(out)
+
+    assert out.shape == x.shape
+    assert cache.current_len == 0
+    assert cache._keys[0][:, :, :S, :].shape == (
+        1,
+        tiny_model_config.n_kv_heads,
+        S,
+        tiny_model_config.head_dim,
+    )
+
+
+def test_attention_forward_decode_shape_and_cache_append(tiny_model_config):
+    """Decode writes one K/V position at current_len and can attend to prior cache."""
+    attn = _attention_with_random_weights(tiny_model_config)
+    cache = KVCache(
+        n_layers=tiny_model_config.n_layers,
+        n_kv_heads=tiny_model_config.n_kv_heads,
+        max_seq_len=tiny_model_config.max_seq_len,
+        head_dim=tiny_model_config.head_dim,
+    )
+    prompt = mx.random.normal((1, 3, tiny_model_config.d_model))
+    attn(prompt, cache, layer_idx=0, position_offset=0)
+    cache.advance(3)
+
+    token = mx.random.normal((1, 1, tiny_model_config.d_model))
+    out = attn(token, cache, layer_idx=0, position_offset=cache.current_len)
+    mx.eval(out)
+
+    assert out.shape == token.shape
+    assert cache.current_len == 3
+    assert cache._keys[0][:, :, :4, :].shape == (
+        1,
+        tiny_model_config.n_kv_heads,
+        4,
+        tiny_model_config.head_dim,
+    )
+
+
+def test_attention_gqa_repeats_kv_heads_on_head_axis():
+    """With T=1, each Q head receives the V head repeated on axis=1."""
+    cfg = ModelConfig(
+        d_model=8,
+        n_layers=1,
+        n_heads=4,
+        n_kv_heads=2,
+        intermediate_size=16,
+        vocab_size=16,
+        max_seq_len=8,
+        rope_theta=10000.0,
+        rms_norm_eps=1e-5,
+    )
+    cos_sin = precompute_freqs(cfg.head_dim, cfg.max_seq_len, cfg.rope_theta)
+    attn = LlamaAttention(cfg, cos_sin)
+    attn.q_proj.weight = mx.zeros((8, 8))
+    attn.k_proj.weight = mx.zeros((4, 8))
+    attn.v_proj.weight = mx.array([
+        [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+    ])
+    attn.o_proj.weight = mx.eye(8)
+    cache = KVCache(n_layers=1, n_kv_heads=2, max_seq_len=8, head_dim=2)
+
+    x = mx.array([[[10.0, 11.0, 20.0, 21.0, 0.0, 0.0, 0.0, 0.0]]])
+    out = attn(x, cache, layer_idx=0, position_offset=0)
+    expected = mx.array([[[10.0, 11.0, 10.0, 11.0, 20.0, 21.0, 20.0, 21.0]]])
+    mx.eval(out, expected)
+
+    assert mx.allclose(out, expected, atol=1e-6).item()
+
+
+def test_attention_causal_mask_uses_absolute_query_positions():
+    """Future key positions are masked relative to position_offset + query index."""
+    scores = mx.zeros((1, 1, 2, 5))
+    masked = _apply_causal_mask(scores, position_offset=2)
+    mx.eval(masked)
+
+    # Query positions are 2 and 3. Keys > each query position are masked.
+    assert float(masked[0, 0, 0, 2]) == 0.0
+    assert float(masked[0, 0, 0, 3]) < -1e8
+    assert float(masked[0, 0, 1, 3]) == 0.0
+    assert float(masked[0, 0, 1, 4]) < -1e8
+
+
+def test_attention_load_weights_routes_to_projection_modules(tiny_model_config):
+    """Module.load_weights() routes Q/K/V/O projection weights by dot path."""
+    cos_sin = precompute_freqs(
+        tiny_model_config.head_dim,
+        tiny_model_config.max_seq_len,
+        tiny_model_config.rope_theta,
+    )
+    attn = LlamaAttention(tiny_model_config, cos_sin)
+    q_w = mx.random.normal((tiny_model_config.n_heads * tiny_model_config.head_dim, tiny_model_config.d_model))
+    k_w = mx.random.normal((tiny_model_config.n_kv_heads * tiny_model_config.head_dim, tiny_model_config.d_model))
+    v_w = mx.random.normal((tiny_model_config.n_kv_heads * tiny_model_config.head_dim, tiny_model_config.d_model))
+    o_w = mx.random.normal((tiny_model_config.d_model, tiny_model_config.n_heads * tiny_model_config.head_dim))
+
+    attn.load_weights({
+        "q_proj.weight": q_w,
+        "k_proj.weight": k_w,
+        "v_proj.weight": v_w,
+        "o_proj.weight": o_w,
+    })
+
+    assert attn.q_proj.weight is q_w
+    assert attn.k_proj.weight is k_w
+    assert attn.v_proj.weight is v_w
+    assert attn.o_proj.weight is o_w
 
 
 # ---------------------------------------------------------------------------
