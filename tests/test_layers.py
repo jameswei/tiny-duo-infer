@@ -16,8 +16,10 @@ import math
 import mlx.core as mx
 import pytest
 
+from tiny_duo_infer.layers.feedforward import SwiGLUFFN
 from tiny_duo_infer.layers.normalization import RMSNorm
 from tiny_duo_infer.layers.rope import apply_rope, precompute_freqs
+from tiny_duo_infer.models.base import Linear
 
 
 # ---------------------------------------------------------------------------
@@ -226,4 +228,141 @@ def test_apply_rope_decode_uses_correct_position(tiny_config):
 # SwiGLUFFN
 # ---------------------------------------------------------------------------
 
-# TODO M1.3: implement FFN tests once feedforward.py is implemented.
+def test_swiglu_init_creates_three_linear_projections(tiny_model_config):
+    """SwiGLUFFN exposes gate_proj, up_proj, down_proj as Linear sub-modules."""
+    ffn = SwiGLUFFN(tiny_model_config)
+    assert isinstance(ffn.gate_proj, Linear)
+    assert isinstance(ffn.up_proj, Linear)
+    assert isinstance(ffn.down_proj, Linear)
+
+
+def test_swiglu_projection_dimensions(tiny_model_config):
+    """gate_proj and up_proj expand D→I; down_proj contracts I→D."""
+    ffn = SwiGLUFFN(tiny_model_config)
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    assert ffn.gate_proj.in_features == D and ffn.gate_proj.out_features == I
+    assert ffn.up_proj.in_features == D   and ffn.up_proj.out_features == I
+    assert ffn.down_proj.in_features == I and ffn.down_proj.out_features == D
+
+
+def test_swiglu_forward_output_shape(tiny_model_config):
+    """SwiGLUFFN preserves the transformer shape: (B, S, D) → (B, S, D)."""
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    ffn = SwiGLUFFN(tiny_model_config)
+    ffn.gate_proj.weight = mx.random.normal((I, D))
+    ffn.up_proj.weight   = mx.random.normal((I, D))
+    ffn.down_proj.weight = mx.random.normal((D, I))
+
+    x = mx.random.normal((1, 5, D))
+    out = ffn(x)
+
+    assert out.shape == x.shape
+
+
+def test_swiglu_gate_and_up_are_separate_weight_tensors(tiny_model_config):
+    """gate_proj and up_proj must not share the same weight object."""
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    ffn = SwiGLUFFN(tiny_model_config)
+    ffn.gate_proj.weight = mx.random.normal((I, D))
+    ffn.up_proj.weight   = mx.random.normal((I, D))
+    ffn.down_proj.weight = mx.random.normal((D, I))
+
+    assert ffn.gate_proj.weight is not ffn.up_proj.weight
+
+
+def test_swiglu_zero_gate_zeros_output(tiny_model_config):
+    """When gate_proj produces all zeros, silu(0)=0 so the entire output is zero.
+
+    This verifies that SiLU is applied to gate (not up): silu(0) * up = 0.
+    If SiLU were incorrectly applied to up, zeroing gate_proj would still
+    zero the output, but zeroing up_proj (see next test) would not.
+    """
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    ffn = SwiGLUFFN(tiny_model_config)
+    ffn.gate_proj.weight = mx.zeros((I, D))          # gate = 0, silu(0) = 0
+    ffn.up_proj.weight   = mx.random.normal((I, D))  # up is non-zero
+    ffn.down_proj.weight = mx.random.normal((D, I))
+
+    x = mx.random.normal((1, 3, D))
+    out = ffn(x)
+    mx.eval(out)
+
+    assert mx.allclose(out, mx.zeros_like(out), atol=1e-6).item()
+
+
+def test_swiglu_zero_up_zeros_output(tiny_model_config):
+    """When up_proj produces all zeros, silu(gate) * 0 = 0 so output is zero.
+
+    Together with test_swiglu_zero_gate_zeros_output this confirms the
+    multiplicative gate: both paths must be non-zero for output to be non-zero.
+    """
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    ffn = SwiGLUFFN(tiny_model_config)
+    ffn.gate_proj.weight = mx.random.normal((I, D))
+    ffn.up_proj.weight   = mx.zeros((I, D))  # up = 0
+    ffn.down_proj.weight = mx.random.normal((D, I))
+
+    x = mx.random.normal((1, 3, D))
+    out = ffn(x)
+    mx.eval(out)
+
+    assert mx.allclose(out, mx.zeros_like(out), atol=1e-6).item()
+
+
+def test_swiglu_forward_manual_formula():
+    """Verify out = down_proj(silu(gate_proj(x)) * up_proj(x)) with known weights."""
+    # Minimal D=2, I=2 case with identity-like weights for easy hand computation
+    import math
+    from tiny_duo_infer.config import ModelConfig
+    cfg = ModelConfig(
+        d_model=2, n_layers=1, n_heads=1, n_kv_heads=1,
+        intermediate_size=2, vocab_size=4, max_seq_len=8,
+        rope_theta=10000.0, rms_norm_eps=1e-5,
+    )
+    ffn = SwiGLUFFN(cfg)
+    # gate_proj = identity, up_proj = 2x identity, down_proj = identity
+    ffn.gate_proj.weight = mx.array([[1.0, 0.0], [0.0, 1.0]])  # (I=2, D=2)
+    ffn.up_proj.weight   = mx.array([[2.0, 0.0], [0.0, 2.0]])  # (I=2, D=2)
+    ffn.down_proj.weight = mx.array([[1.0, 0.0], [0.0, 1.0]])  # (D=2, I=2)
+
+    x = mx.array([[[1.0, 2.0]]])  # (B=1, S=1, D=2)
+
+    # gate = x @ gate_proj.T = [1, 2]
+    # up   = x @ up_proj.T   = [2, 4]
+    # silu([1, 2]) = [1*sig(1), 2*sig(2)]
+    # silu(gate) * up = [2*sig(1), 8*sig(2)]
+    # down_proj(above) @ identity.T = [2*sig(1), 8*sig(2)]
+    sig1 = 1.0 / (1.0 + math.exp(-1.0))
+    sig2 = 1.0 / (1.0 + math.exp(-2.0))
+    expected = mx.array([[[2.0 * sig1, 8.0 * sig2]]])
+
+    out = ffn(x)
+    mx.eval(out, expected)
+
+    assert mx.allclose(out, expected, atol=1e-5).item()
+
+
+def test_swiglu_load_weights_routes_to_submodules(tiny_model_config):
+    """load_weights() dot-path routing populates gate_proj, up_proj, down_proj."""
+    D = tiny_model_config.d_model
+    I = tiny_model_config.intermediate_size
+    ffn = SwiGLUFFN(tiny_model_config)
+
+    gate_w = mx.random.normal((I, D))
+    up_w   = mx.random.normal((I, D))
+    down_w = mx.random.normal((D, I))
+
+    ffn.load_weights({
+        "gate_proj.weight": gate_w,
+        "up_proj.weight":   up_w,
+        "down_proj.weight": down_w,
+    })
+
+    assert ffn.gate_proj.weight is gate_w
+    assert ffn.up_proj.weight   is up_w
+    assert ffn.down_proj.weight is down_w

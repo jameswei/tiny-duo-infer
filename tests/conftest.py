@@ -10,6 +10,8 @@ Tests requiring the real model are marked @pytest.mark.slow and skipped unless
 
 import pytest
 
+from tiny_duo_infer.config import ModelConfig
+
 
 # Tiny Llama-compatible config for fast unit and shape tests.
 # Mirrors the Llama-3.2-1B architecture at 1/32 scale.
@@ -58,3 +60,19 @@ def pytest_collection_modifyitems(
 def tiny_config() -> dict:
     """Return the shared tiny model config dict for shape and unit tests."""
     return dict(TINY_CONFIG)
+
+
+@pytest.fixture
+def tiny_model_config() -> ModelConfig:
+    """Return the shared tiny model config as a typed ModelConfig dataclass."""
+    return ModelConfig(
+        d_model=TINY_CONFIG["d_model"],
+        n_layers=TINY_CONFIG["n_layers"],
+        n_heads=TINY_CONFIG["n_heads"],
+        n_kv_heads=TINY_CONFIG["n_kv_heads"],
+        intermediate_size=TINY_CONFIG["intermediate_size"],
+        vocab_size=TINY_CONFIG["vocab_size"],
+        max_seq_len=TINY_CONFIG["max_seq_len"],
+        rope_theta=TINY_CONFIG["rope_theta"],
+        rms_norm_eps=TINY_CONFIG["rms_norm_eps"],
+    )
