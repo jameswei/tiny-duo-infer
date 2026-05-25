@@ -36,8 +36,8 @@ This taskboard should stay aligned with that spec.
 | P1-T04 | M1.2 | Llama weight converter | P1-T01, P1-T03 | done | codex | HF keys map, tied embeddings handled | reviewed by cc; 15 unit tests pass, 1 skipped; no findings |
 | P1-T05 | M1.3 | Base module helpers | P1-T01 | done | cc | `Module`, `Linear`, `Embedding` tested | reviewed by codex; 16 unit tests pass; no findings |
 | P1-T06 | M1.3 | KV cache | P1-T01 | done | cc | preallocated `update()`/`advance()` tests pass | reviewed by codex; 31 unit tests pass; no findings |
-| P1-T07 | M1.3 | RMSNorm | P1-T05 | todo | unassigned | manual formula tests pass | |
-| P1-T08 | M1.3 | RoPE | P1-T05 | todo | unassigned | manual rotation tests pass | |
+| P1-T07 | M1.3 | RMSNorm | P1-T05 | done | codex | manual formula tests pass | reviewed by cc; 5 unit tests pass; no findings |
+| P1-T08 | M1.3 | RoPE | P1-T05 | done | cc | manual rotation tests pass | reviewed by codex; `uv run pytest`: 114 passed, 7 skipped; no findings |
 | P1-T09 | M1.3 | SwiGLU FFN | P1-T05 | todo | unassigned | shape and gate/up tests pass | |
 | P1-T10 | M1.3 | GQA attention | P1-T06, P1-T08 | todo | unassigned | GQA axis, mask, cache tests pass | high-risk |
 | P1-T11 | M1.4 | Llama model assembly | P1-T07, P1-T09, P1-T10 | todo | unassigned | tiny model forward shape passes | |

@@ -26,12 +26,14 @@ Usage:
 
 from __future__ import annotations
 
+import mlx.core as mx
+
 
 def precompute_freqs(
     head_dim: int,
     max_seq_len: int,
     theta: float,
-) -> tuple[any, any]:
+) -> tuple[mx.array, mx.array]:
     """
     Precompute RoPE cosine and sine tables.
 
@@ -51,15 +53,29 @@ def precompute_freqs(
     Returns:
         (cos_table, sin_table): each (max_seq_len, head_dim // 2).
     """
-    raise NotImplementedError
+    # Even indices 0, 2, 4, ..., head_dim-2 → one per pair
+    i = mx.arange(0, head_dim, 2, dtype=mx.float32)  # (head_dim // 2,)
+    # freq_i = 1 / (theta ^ (2i / head_dim)) — lower frequencies for later pairs
+    freqs = 1.0 / (theta ** (i / head_dim))           # (head_dim // 2,)
+
+    # Absolute positions 0, 1, ..., max_seq_len-1
+    positions = mx.arange(max_seq_len, dtype=mx.float32)  # (max_seq_len,)
+
+    # angles[pos, i] = pos * freq_i — outer product via broadcasting
+    angles = positions[:, None] * freqs[None, :]          # (max_seq_len, head_dim // 2)
+
+    cos_table = mx.cos(angles)  # (max_seq_len, head_dim // 2)
+    sin_table = mx.sin(angles)  # (max_seq_len, head_dim // 2)
+
+    return cos_table, sin_table
 
 
 def apply_rope(
-    x: any,
-    cos: any,
-    sin: any,
+    x: mx.array,
+    cos: mx.array,
+    sin: mx.array,
     offset: int = 0,
-) -> any:
+) -> mx.array:
     """
     Compute and return rotary positional embeddings applied to Q or K.
 
@@ -80,4 +96,29 @@ def apply_rope(
     Returns:
         (B, S, H, Dh) tensor with RoPE applied.
     """
-    raise NotImplementedError
+    B, S, H, Dh = x.shape
+
+    # Select the cos/sin rows for positions [offset, offset+S) and broadcast
+    # to (1, S, 1, Dh//2) so they align with (B, S, H, Dh//2)
+    cos_s = cos[offset : offset + S].reshape(1, S, 1, Dh // 2)
+    sin_s = sin[offset : offset + S].reshape(1, S, 1, Dh // 2)
+
+    # Split each head vector into consecutive pairs along the last dimension.
+    # x[..., 0::2]: elements at indices 0, 2, 4, ... (the "x0" of each pair)
+    # x[..., 1::2]: elements at indices 1, 3, 5, ... (the "x1" of each pair)
+    # Both have shape (B, S, H, Dh // 2)
+    x0 = x[..., 0::2]  # (B, S, H, Dh // 2)
+    x1 = x[..., 1::2]  # (B, S, H, Dh // 2)
+
+    # Apply the 2D rotation to each pair:
+    #   x0' = x0 * cos - x1 * sin
+    #   x1' = x0 * sin + x1 * cos
+    x0_rot = x0 * cos_s - x1 * sin_s  # (B, S, H, Dh // 2)
+    x1_rot = x0 * sin_s + x1 * cos_s  # (B, S, H, Dh // 2)
+
+    # Interleave x0_rot and x1_rot back to (B, S, H, Dh).
+    # mx.stack(..., axis=-1) → (B, S, H, Dh // 2, 2)
+    # reshape → (B, S, H, Dh), with pairs restored to consecutive positions
+    rotated = mx.stack([x0_rot, x1_rot], axis=-1).reshape(B, S, H, Dh)
+
+    return rotated

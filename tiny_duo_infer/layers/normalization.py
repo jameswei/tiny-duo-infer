@@ -20,6 +20,8 @@ Where:
 
 from __future__ import annotations
 
+import mlx.core as mx
+
 from tiny_duo_infer.models.base import Module
 
 
@@ -44,13 +46,19 @@ class RMSNorm(Module):
             d_model: hidden dimension size, determines weight shape (d_model,).
             eps:     numerical stability constant.
         """
-        raise NotImplementedError
+        self.d_model = d_model
+        self.eps = eps
+        self.weight: mx.array | None = None  # (D,)
 
-    def forward(self, x: any) -> any:
+    def forward(self, x: mx.array) -> mx.array:
         """
         Args:
             x: (B, S, D) input tensor.
         Returns:
             (B, S, D) normalised and scaled tensor.
         """
-        raise NotImplementedError
+        # RMSNorm rescales each token independently across the hidden dimension
+        # only. There is no mean subtraction, unlike LayerNorm.
+        mean_square = mx.mean(x * x, axis=-1, keepdims=True)  # (B, S, 1)
+        normalized = x * mx.rsqrt(mean_square + self.eps)     # (B, S, D)
+        return normalized * self.weight                       # (B, S, D)
