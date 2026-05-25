@@ -29,7 +29,7 @@ This taskboard should stay aligned with that spec.
 
 | ID | Milestone | Task | Depends On | Status | Owner | Acceptance | Notes |
 |---|---|---|---|---|---|---|---|
-| P1-T00 | M1.0 | Project scaffolding | none | todo | unassigned | `uv sync`, import works, pytest runs | |
+| P1-T00 | M1.0 | Project scaffolding | none | done | cc | `uv sync`, import works, pytest runs | scaffold created; reviewed by Codex; all 6 slow tests skip cleanly |
 | P1-T01 | M1.1 | Config loader | P1-T00 | todo | unassigned | config fields parsed and tested | |
 | P1-T02 | M1.1 | Tokenizer wrapper | P1-T00 | todo | unassigned | encode/decode and BOS/EOS tests pass | |
 | P1-T03 | M1.2 | Safetensors loader | P1-T00 | todo | unassigned | single/sharded safetensors load | |
