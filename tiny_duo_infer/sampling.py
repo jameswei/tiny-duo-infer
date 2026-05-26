@@ -76,4 +76,47 @@ def sample(
     Returns:
         int token ID.
     """
-    raise NotImplementedError
+    if temperature < 0.0:
+        raise ValueError(f"temperature must be >= 0, got {temperature}")
+    if top_k < 0:
+        raise ValueError(f"top_k must be >= 0, got {top_k}")
+    if not (0.0 < top_p <= 1.0):
+        raise ValueError(f"top_p must be in (0, 1], got {top_p}")
+
+    # temperature=0.0: logits / ~0 → huge values; argmax is more correct and stable.
+    if temperature == 0.0:
+        return greedy(logits)
+
+    # Step 1: temperature scaling.
+    logits = logits / max(temperature, 1e-6)
+
+    # Step 2: top-k — keep only the k highest-logit tokens.
+    if top_k > 0:
+        k = min(top_k, logits.shape[0])
+        # mx.sort is ascending; index [-k] is the k-th largest value (threshold).
+        threshold = mx.sort(logits)[-k]
+        neg_inf = mx.full(logits.shape, float("-inf"), dtype=logits.dtype)
+        logits = mx.where(logits >= threshold, logits, neg_inf)
+
+    # Step 3: top-p (nucleus) — keep the smallest prefix whose cumulative
+    # probability >= top_p, including the token that crosses the threshold.
+    if top_p < 1.0:
+        # Sort indices descending by logit so we process the most likely tokens first.
+        desc_idx = mx.argsort(-logits)
+        sorted_logits = logits[desc_idx]
+        probs = mx.softmax(sorted_logits)
+        cumprobs = mx.cumsum(probs)
+        # cumprobs[i] - probs[i] is the cumulative probability strictly before
+        # token i. Keep token i when that prefix sum is still below top_p, i.e.,
+        # token i is either inside the nucleus or is the one that crosses it.
+        keep = (cumprobs - probs) < top_p
+        neg_inf = mx.full(sorted_logits.shape, float("-inf"), dtype=sorted_logits.dtype)
+        filtered = mx.where(keep, sorted_logits, neg_inf)
+        # Scatter back to the original vocabulary order.
+        inv_perm = mx.argsort(desc_idx)
+        logits = filtered[inv_perm]
+
+    # Steps 4 + 5: softmax is implicit in mx.random.categorical (takes raw logits).
+    token = mx.random.categorical(logits)
+    mx.eval(token)
+    return token.item()

@@ -254,9 +254,9 @@ class _SequenceModel:
 
 def test_generate_yields_up_to_max_new_tokens(tiny_model_config):
     """generate() yields exactly max_new_tokens fragments when EOS is not seen."""
-    # _RecordingModel decode logits: arange(V) → argmax = V-1 = 255 ≠ eos_token_id=0
+    # _RecordingModel decode logits: arange(V) → argmax = V-1 ≠ eos_token_id=0
     engine = _make_engine(tiny_model_config)
-    tokens = list(engine.generate("hello", max_new_tokens=5))
+    tokens = list(engine.generate("hello", max_new_tokens=5, temperature=0.0))
     assert len(tokens) == 5
 
 
@@ -267,7 +267,7 @@ def test_generate_stops_before_yielding_eos(tiny_model_config):
     # prefill call (call 0): sequence[0]=10 → first generated token = 10
     # decode call (call 1): sequence[1]=eos → EOS → stop without yielding
     engine.model = _SequenceModel(tiny_model_config, [10, eos])
-    tokens = list(engine.generate("hello", max_new_tokens=10))
+    tokens = list(engine.generate("hello", max_new_tokens=10, temperature=0.0))
     assert len(tokens) == 1
     assert tokens[0] == "10"  # _FakeTokenizer.decode([10]) = "10"
 
@@ -280,7 +280,7 @@ def test_generate_stops_after_several_tokens_then_eos(tiny_model_config):
     # call 1 (decode 1): 20 → second token
     # call 2 (decode 2): eos → stop
     engine.model = _SequenceModel(tiny_model_config, [10, 20, eos])
-    tokens = list(engine.generate("hello", max_new_tokens=10))
+    tokens = list(engine.generate("hello", max_new_tokens=10, temperature=0.0))
     assert len(tokens) == 2
     assert tokens == ["10", "20"]
 
@@ -289,7 +289,7 @@ def test_generate_decode_increments_cache_each_step(tiny_model_config):
     """cache.current_len grows by 1 for every decode step, checkable mid-stream."""
     engine = _make_engine(tiny_model_config)
     prompt_len = 3  # _FakeTokenizer always encodes to [7, 8, 9]
-    gen = engine.generate("hello", max_new_tokens=4)
+    gen = engine.generate("hello", max_new_tokens=4, temperature=0.0)
 
     # First next(): prefill runs + first yield. advance(1) happens after the
     # yield, so current_len is still prompt_len at this suspension point.
@@ -314,7 +314,7 @@ def test_generate_materialises_cache_after_prefill_and_decode(tiny_model_config)
 
     engine._new_cache = new_recording_cache
 
-    list(engine.generate("hello", max_new_tokens=4))
+    list(engine.generate("hello", max_new_tokens=4, temperature=0.0))
 
     # max_new_tokens=4 yields four tokens. The loop runs three decode forwards:
     # after the first, second, and third yielded tokens. The fourth token is the
@@ -326,7 +326,7 @@ def test_generate_decode_uses_cache_len_as_position_offset(tiny_model_config):
     """Each decode step passes cache.current_len at call time as position_offset."""
     engine = _make_engine(tiny_model_config)
     prompt_len = 3  # _FakeTokenizer returns [7, 8, 9]
-    list(engine.generate("hello", max_new_tokens=3))
+    list(engine.generate("hello", max_new_tokens=3, temperature=0.0))
 
     model = engine.model
     # calls[0] = prefill at position_offset=0
@@ -340,7 +340,7 @@ def test_generate_decode_uses_cache_len_as_position_offset(tiny_model_config):
 def test_generate_decode_input_is_single_token(tiny_model_config):
     """Each decode step feeds a (1, 1) input_ids tensor to the model."""
     engine = _make_engine(tiny_model_config)
-    list(engine.generate("hello", max_new_tokens=3))
+    list(engine.generate("hello", max_new_tokens=3, temperature=0.0))
 
     for call in engine.model.calls[1:]:  # skip prefill
         input_ids, _ = call
@@ -348,11 +348,11 @@ def test_generate_decode_input_is_single_token(tiny_model_config):
 
 
 def test_generate_greedy_is_deterministic(tiny_model_config):
-    """Two generate() calls with the same prompt produce identical output."""
+    """Two greedy generate() calls with the same prompt produce identical output."""
     engine1 = _make_engine(tiny_model_config)
     engine2 = _make_engine(tiny_model_config)
-    out1 = list(engine1.generate("hello", max_new_tokens=4))
-    out2 = list(engine2.generate("hello", max_new_tokens=4))
+    out1 = list(engine1.generate("hello", max_new_tokens=4, temperature=0.0))
+    out2 = list(engine2.generate("hello", max_new_tokens=4, temperature=0.0))
     assert out1 == out2
 
 

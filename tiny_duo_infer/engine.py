@@ -24,7 +24,7 @@ import mlx.core as mx
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
 from tiny_duo_infer.models.llama import LlamaModel
-from tiny_duo_infer.sampling import greedy
+from tiny_duo_infer.sampling import sample
 from tiny_duo_infer.tokenizer.loader import Tokenizer
 from tiny_duo_infer.weights.llama_converter import convert
 from tiny_duo_infer.weights.loader import load_weights
@@ -218,9 +218,8 @@ class Engine:
         samples the next token. The loop continues until EOS is sampled or
         max_new_tokens is reached. This is the slow part — it is sequential.
 
-        M1.6 uses greedy sampling only. The temperature, top_k, and top_p
-        parameters are accepted here (to keep the public API stable) but are
-        wired in M1.8.
+        M1.8 wires all sampling parameters through sample(). Pass
+        temperature=0.0 for deterministic greedy decoding.
 
         Args:
             prompt:         input text string.
@@ -240,7 +239,7 @@ class Engine:
 
         # Sample the first generated token from the prefill logits.
         # This token sits at absolute position cache.current_len (= prompt_len).
-        next_token = greedy(first_logits)
+        next_token = sample(first_logits, temperature=temperature, top_k=top_k, top_p=top_p)
 
         for step in range(max_new_tokens):
             # EOS check: stop before yielding the stop token so callers never
@@ -278,4 +277,4 @@ class Engine:
             # all 16 layers during the next decode step.
             self.cache.advance(1)
 
-            next_token = greedy(logits[0, 0, :])  # (V,) → scalar int
+            next_token = sample(logits[0, 0, :], temperature=temperature, top_k=top_k, top_p=top_p)

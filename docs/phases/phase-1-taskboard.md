@@ -49,7 +49,7 @@ This taskboard should stay aligned with that spec.
 | P1-T14 | M1.6 | CLI | P1-T13 | done | codex | CLI generates local text | reviewed by cc; 6 unit tests pass; no findings; `uv run pytest`: 160 passed, 7 skipped |
 | P1-T15 | M1.7 | MLX eval placement | P1-T13 | done | codex | `mx.eval()` placement documented | reviewed by cc; no findings; engine/cache/backend comments accurate; 2 new eval placement tests pass; `uv run pytest`: 161 passed, 7 skipped |
 | P1-T16 | M1.7 | Benchmark script | P1-T13 | done | cc | tokens/sec and KV memory reported | reviewed by codex; `uv run python scripts/benchmark.py --help` passes; `kv_cache_bytes(16, 8, 1024, 64)` = 33554432; `uv run pytest`: 160 passed, 7 skipped; real benchmark requires model artifacts |
-| P1-T17 | M1.8 | Sampling extension | P1-T13 | todo | unassigned | temp/top-k/top-p tests pass | optional |
+| P1-T17 | M1.8 | Sampling extension | P1-T13 | done | cc | temp/top-k/top-p tests pass | reviewed by codex; sample() implemented and wired into engine; input validation added; unused greedy import removed; `uv run pytest`: 172 passed, 7 skipped; no findings |
 | P1-T18 | Phase close | Handoff and verification | P1-T14, P1-T15, P1-T16 | todo | unassigned | handoff complete, tests recorded | |
 
 ## Review-Sensitive Tasks
