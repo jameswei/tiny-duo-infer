@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
-from safetensors.mlx import load_file
 
 
 def load_weights(model_path: Path | str) -> dict[str, mx.array]:
@@ -44,7 +43,7 @@ def load_weights(model_path: Path | str) -> dict[str, mx.array]:
 
     weights: dict[str, mx.array] = {}
     for shard_path in shard_paths:
-        shard_weights = load_file(str(shard_path))
+        shard_weights = mx.load(str(shard_path))
         _merge_shard(weights, shard_weights, shard_path)
 
     return weights

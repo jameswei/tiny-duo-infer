@@ -97,19 +97,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--temperature",
         type=float,
         default=1.0,
-        help="Sampling temperature. Accepted in M1.6; applied in M1.8.",
+        help="Sampling temperature. 1.0 = unchanged; 0.0 = greedy.",
     )
     parser.add_argument(
         "--top-k",
         type=_non_negative_int,
         default=0,
-        help="Top-k sampling limit. 0 disables it. Applied in M1.8.",
+        help="Top-k sampling limit. 0 disables it.",
     )
     parser.add_argument(
         "--top-p",
         type=float,
         default=1.0,
-        help="Top-p nucleus threshold. Applied in M1.8.",
+        help="Top-p nucleus threshold. 1.0 disables it.",
     )
     return parser
 

@@ -225,9 +225,9 @@ class Engine:
             prompt:         input text string.
             max_new_tokens: maximum number of NEW tokens to generate
                             (does not count the prompt tokens).
-            temperature:    divide logits by this before sampling (M1.8).
-            top_k:          keep only top-k logits before sampling (M1.8).
-            top_p:          keep tokens summing to probability >= top_p (M1.8).
+            temperature:    divide logits by this before sampling. 0.0 = greedy.
+            top_k:          keep only top-k logits before sampling. 0 = off.
+            top_p:          keep tokens summing to probability >= top_p. 1.0 = off.
 
         Yields:
             str: decoded text fragment for each new token, in order.
