@@ -167,8 +167,10 @@ class Engine:
         final_logits = logits[0, prompt_len - 1, :]  # (V,)
         cache.advance(prompt_len)
 
-        # Materialise both the returned logits and the cache writes that decode
-        # will read next. P1-T15 will refine broader eval placement.
+        # MLX is lazy: the prefill forward pass queues both the logits
+        # computation and the in-place cache writes. Evaluate the final-position
+        # logits before CPU-side greedy sampling, then evaluate the cache
+        # buffers before decode reads positions [0, prompt_len).
         mx.eval(final_logits)
         cache.eval()
         self.cache = cache
@@ -260,19 +262,15 @@ class Engine:
             position_offset = self.cache.current_len
             logits = self.model(input_ids, self.cache, position_offset)  # (1, 1, V)
 
-            # Flush MLX's lazy computation graph. MLX defers all tensor ops
-            # until an array is explicitly materialised. Calling mx.eval() once
-            # here — not inside any layer — ensures the full decode forward pass
-            # runs on the GPU before we read the sampled token ID on the CPU.
-            # One GPU/CPU sync per decode step keeps throughput high.
+            # Flush MLX's lazy computation graph at the engine boundary, not
+            # inside individual layers. The next line materialises logits before
+            # CPU-side greedy sampling reads the selected token ID.
             mx.eval(logits)
 
-            # Materialise the KV cache writes from this step before the next
-            # decode step reads those buffer positions. mx.eval(logits) commits
-            # the computation graph, but cache._keys/_values may still be lazy
-            # nodes if MLX deferred the in-place slice assignment. Calling
-            # cache.eval() here ensures every layer's written K/V entry is
-            # concrete, preventing the lazy graph from growing across decode steps.
+            # Materialise the KV cache writes from this token step before the
+            # next decode step reads them. This is intentionally separate from
+            # mx.eval(logits): logits are sampled on the CPU, while cache buffers
+            # are the persisted accelerator state for future attention.
             self.cache.eval()
 
             # Commit the new KV position. advance() is called once per token

@@ -304,6 +304,24 @@ def test_generate_decode_increments_cache_each_step(tiny_model_config):
     assert engine.cache.current_len == prompt_len + 2
 
 
+def test_generate_materialises_cache_after_prefill_and_decode(tiny_model_config):
+    """Generation evaluates cache buffers after prefill and each decode forward."""
+    engine = _make_engine(tiny_model_config)
+    real_new_cache = engine._new_cache
+
+    def new_recording_cache():
+        return _RecordingCache(real_new_cache())
+
+    engine._new_cache = new_recording_cache
+
+    list(engine.generate("hello", max_new_tokens=4))
+
+    # max_new_tokens=4 yields four tokens. The loop runs three decode forwards:
+    # after the first, second, and third yielded tokens. The fourth token is the
+    # final output, so no unused decode forward is run after it.
+    assert engine.cache.eval_calls == 4  # 1 prefill + 3 decode cache evals
+
+
 def test_generate_decode_uses_cache_len_as_position_offset(tiny_model_config):
     """Each decode step passes cache.current_len at call time as position_offset."""
     engine = _make_engine(tiny_model_config)

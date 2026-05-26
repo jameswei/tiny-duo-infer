@@ -8,6 +8,9 @@ implementation in Phase 2.
 
 Key MLX behaviour to understand:
   MLX uses lazy evaluation — operations build a computation graph but do not
-  execute until mx.eval() is called. Call mx.eval() once per decode step at
-  the engine level (after the full forward pass) rather than inside layers.
+  execute until mx.eval() is called. Phase 1 synchronizes only at engine
+  boundaries: after prefill, and once per decode step after the full forward
+  pass. Do not call mx.eval() inside individual layers; that would add
+  unnecessary GPU/CPU synchronization points and hide where inference steps
+  begin and end.
 """

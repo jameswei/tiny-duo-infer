@@ -187,12 +187,13 @@ class KVCache:
 
     def eval(self) -> None:
         """
-        Materialise all K/V cache buffers on the MLX backend.
+        Materialise all K/V cache buffers at an engine synchronization point.
 
-        MLX uses lazy evaluation. After prefill, the engine must ensure that
-        every layer's cache writes are committed before decode starts reading
-        those buffers at the next token position. P1-T15 will refine broader
-        evaluation placement, but prefill needs this explicit synchronization
-        point to make the cache state concrete.
+        MLX uses lazy evaluation: tensor operations and slice writes can remain
+        queued until `mx.eval()` is called. The engine calls this method after
+        prefill and after each decode forward pass, before any later decode step
+        reads the newly written cache positions. Keeping the eval boundary here
+        avoids synchronizing inside individual layers while still making the
+        cache state concrete between token steps.
         """
         mx.eval(*self._keys, *self._values)
