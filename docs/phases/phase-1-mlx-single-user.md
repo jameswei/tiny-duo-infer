@@ -62,7 +62,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "mlx>=0.10",
     "tokenizers>=0.19",
-    "safetensors>=0.4",
     "huggingface-hub>=0.23",
 ]
 
@@ -70,6 +69,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "transformers>=4.40",
+    "safetensors>=0.4",
 ]
 
 [build-system]
