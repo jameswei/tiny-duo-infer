@@ -46,7 +46,7 @@ This taskboard should stay aligned with that spec.
 | P1-T11 | M1.4 | Llama model assembly | P1-T07, P1-T09, P1-T10 | done | cc | tiny model forward shape passes | reviewed by codex; `uv run pytest`: 134 passed, 7 skipped; no findings |
 | P1-T12 | M1.5 | Prefill path | P1-T02, P1-T04, P1-T11 | done | codex | cache filled, final logits returned | reviewed by cc; fix applied: `KVCache.eval()` added, prefill flushes cache buffers; `uv run pytest`: 141 passed, 7 skipped; no findings |
 | P1-T13 | M1.6 | Greedy decode loop | P1-T12 | done | cc | EOS/max-token stop, deterministic | reviewed by codex; fixes applied: cache.eval() per decode step, no extra decode on last step, top-level import; `uv run pytest`: 154 passed, 7 skipped; no findings |
-| P1-T14 | M1.6 | CLI | P1-T13 | todo | unassigned | CLI generates local text | |
+| P1-T14 | M1.6 | CLI | P1-T13 | done | codex | CLI generates local text | reviewed by cc; 6 unit tests pass; no findings; `uv run pytest`: 160 passed, 7 skipped |
 | P1-T15 | M1.7 | MLX eval placement | P1-T13 | todo | unassigned | `mx.eval()` placement documented | |
 | P1-T16 | M1.7 | Benchmark script | P1-T13 | todo | unassigned | tokens/sec and KV memory reported | |
 | P1-T17 | M1.8 | Sampling extension | P1-T13 | todo | unassigned | temp/top-k/top-p tests pass | optional |
