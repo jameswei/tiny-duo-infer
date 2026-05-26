@@ -128,9 +128,37 @@ Use this flow for normal implementation tasks:
 7. Produce a handoff note.
 8. Reviewer checks the change against the role-specific checklist.
 9. Test verifier records test results and environment details.
+10. A non-owner agent records sign-off before the task is marked `done`.
 
 For large design changes, architecture review should happen before full
 implementation.
+
+## Review And Sign-Off Requirements
+
+Every task or code change must be reviewed and signed off by an agent other
+than the owner who made the change.
+
+The implementing owner may:
+
+- claim a task by setting it to `in_progress`
+- move a task to `review` after implementation and local tests
+- record test commands, skipped tests, known gaps, and handoff notes
+
+The implementing owner must not:
+
+- mark their own task as `done`
+- record their own implementation as reviewed or accepted
+- merge or close review-sensitive work without another agent's explicit sign-off
+
+The reviewing agent is responsible for deciding whether the task can move from
+`review` to `done`. When marking a task `done`, the reviewer must record their
+agent name and the review result in the taskboard `Notes`, for example:
+`reviewed by codex; uv run pytest: 154 passed, 7 skipped; no findings`.
+
+If the reviewer requests fixes, the task stays in `review` until the owner
+applies the fixes and the reviewer signs off on the updated change. The owner
+may update the notes with fix details, but final `done` status still requires
+the reviewer.
 
 ## Handoff Format
 

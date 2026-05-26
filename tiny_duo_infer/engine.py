@@ -24,6 +24,7 @@ import mlx.core as mx
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
 from tiny_duo_infer.models.llama import LlamaModel
+from tiny_duo_infer.sampling import greedy
 from tiny_duo_infer.tokenizer.loader import Tokenizer
 from tiny_duo_infer.weights.llama_converter import convert
 from tiny_duo_infer.weights.loader import load_weights
@@ -203,16 +204,80 @@ class Engine:
         may be a subword (e.g. "▁hel", "lo"). Callers can join fragments
         with "".join(engine.generate(...)) to get the full output string.
 
+        Generation has two phases:
+
+        Prefill: the full prompt is processed in a single forward pass. The
+        model writes KV entries for every prompt position in one shot, and the
+        final-position logits give the first generated token. This is the fast
+        part — the GPU processes all prompt tokens in parallel.
+
+        Decode: one token is generated per step. Each step runs the model with
+        a single input token, reads the KV cache for all past positions, and
+        samples the next token. The loop continues until EOS is sampled or
+        max_new_tokens is reached. This is the slow part — it is sequential.
+
+        M1.6 uses greedy sampling only. The temperature, top_k, and top_p
+        parameters are accepted here (to keep the public API stable) but are
+        wired in M1.8.
+
         Args:
             prompt:         input text string.
             max_new_tokens: maximum number of NEW tokens to generate
                             (does not count the prompt tokens).
-            temperature:    divide logits by this before sampling.
-                            1.0 = unchanged. Lower = sharper. 0.0 = greedy.
-            top_k:          keep only top-k logits before sampling. 0 = off.
-            top_p:          keep tokens summing to probability >= top_p. 1.0 = off.
+            temperature:    divide logits by this before sampling (M1.8).
+            top_k:          keep only top-k logits before sampling (M1.8).
+            top_p:          keep tokens summing to probability >= top_p (M1.8).
 
         Yields:
             str: decoded text fragment for each new token, in order.
         """
-        raise NotImplementedError
+        # Prefill: encode the prompt, run a full forward pass over all prompt
+        # tokens, fill the KV cache for positions [0, prompt_len), and return
+        # (V,) logits for the last prompt position. self.cache is set here.
+        first_logits = self.prefill(prompt)  # (V,)
+
+        # Sample the first generated token from the prefill logits.
+        # This token sits at absolute position cache.current_len (= prompt_len).
+        next_token = greedy(first_logits)
+
+        for step in range(max_new_tokens):
+            # EOS check: stop before yielding the stop token so callers never
+            # receive it. This mirrors how generation frameworks handle EOS.
+            if next_token == self.tokenizer.eos_token_id:
+                break
+
+            yield self.tokenizer.decode([next_token])
+
+            # Skip the decode forward on the last step: the sampled token would
+            # never be yielded, so running the model here is pure waste.
+            if step == max_new_tokens - 1:
+                break
+
+            # Decode step: run the model with next_token as the single input.
+            # position_offset tells the attention layer where in the sequence
+            # this token sits, so RoPE and the causal mask are correct.
+            input_ids = mx.array([[next_token]])  # (B=1, S=1)
+            position_offset = self.cache.current_len
+            logits = self.model(input_ids, self.cache, position_offset)  # (1, 1, V)
+
+            # Flush MLX's lazy computation graph. MLX defers all tensor ops
+            # until an array is explicitly materialised. Calling mx.eval() once
+            # here — not inside any layer — ensures the full decode forward pass
+            # runs on the GPU before we read the sampled token ID on the CPU.
+            # One GPU/CPU sync per decode step keeps throughput high.
+            mx.eval(logits)
+
+            # Materialise the KV cache writes from this step before the next
+            # decode step reads those buffer positions. mx.eval(logits) commits
+            # the computation graph, but cache._keys/_values may still be lazy
+            # nodes if MLX deferred the in-place slice assignment. Calling
+            # cache.eval() here ensures every layer's written K/V entry is
+            # concrete, preventing the lazy graph from growing across decode steps.
+            self.cache.eval()
+
+            # Commit the new KV position. advance() is called once per token
+            # step (not once per layer) so current_len stays consistent across
+            # all 16 layers during the next decode step.
+            self.cache.advance(1)
+
+            next_token = greedy(logits[0, 0, :])  # (V,) → scalar int

@@ -31,9 +31,13 @@ class ModelConfig:
         rope_theta=500000.0, rms_norm_eps=1e-5
     """
 
+    # mapping to `hidden_size`
     d_model: int
+    # mapping to `num_hidden_layers`
     n_layers: int
+    # mapping to `num_attention_heads`
     n_heads: int
+    # mapping to `num_key_value_heads`
     n_kv_heads: int
     intermediate_size: int
     vocab_size: int
@@ -41,11 +45,13 @@ class ModelConfig:
     rope_theta: float
     rms_norm_eps: float
 
+    # derived value
     @property
     def head_dim(self) -> int:
         """Head dimension: d_model // n_heads."""
         return self.d_model // self.n_heads
 
+    # derived value
     @property
     def n_groups(self) -> int:
         """GQA group count: n_heads // n_kv_heads (how many Q heads share each KV head)."""

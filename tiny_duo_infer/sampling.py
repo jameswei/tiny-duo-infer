@@ -18,23 +18,27 @@ Phase 1 milestones:
 
 from __future__ import annotations
 
+import mlx.core as mx
 
-def greedy(logits: any) -> int:
+
+def greedy(logits: mx.array) -> int:
     """
     Return the token ID with the highest logit.
 
-    The simplest possible sampling strategy: always pick the most probable
-    token. Produces deterministic, repeatable output given the same model
-    and prompt. Good for testing correctness before probabilistic sampling
-    is implemented.
+    Greedy decoding is deterministic: the same logits always produce the same
+    token. It is the M1.6 baseline and equivalent to temperature→0 or top_k=1
+    in M1.8.
+
+    The engine calls mx.eval(logits) before invoking this function, so the
+    array is fully materialised and .item() is a CPU read with no GPU sync.
 
     Args:
-        logits: (vocab_size,) — single position only.
+        logits: (vocab_size,) unnormalized log-probabilities for one position.
 
     Returns:
-        int token ID.
+        int token ID of the highest-scoring token.
     """
-    raise NotImplementedError
+    return mx.argmax(logits).item()
 
 
 def sample(
