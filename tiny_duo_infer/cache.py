@@ -184,3 +184,15 @@ class KVCache:
             self._keys[i] = mx.zeros(shape)
             self._values[i] = mx.zeros(shape)
         self._current_len = 0
+
+    def eval(self) -> None:
+        """
+        Materialise all K/V cache buffers on the MLX backend.
+
+        MLX uses lazy evaluation. After prefill, the engine must ensure that
+        every layer's cache writes are committed before decode starts reading
+        those buffers at the next token position. P1-T15 will refine broader
+        evaluation placement, but prefill needs this explicit synchronization
+        point to make the cache state concrete.
+        """
+        mx.eval(*self._keys, *self._values)

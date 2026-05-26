@@ -41,7 +41,7 @@ This taskboard should stay aligned with that spec.
 | P1-T09 | M1.3 | SwiGLU FFN | P1-T05 | done | cc | shape and gate/up tests pass | reviewed by codex; `uv run pytest`: 122 passed, 7 skipped; no findings |
 | P1-T10 | M1.3 | GQA attention | P1-T06, P1-T08 | done | codex | GQA axis, mask, cache tests pass | reviewed by cc; 6 unit tests pass; no findings |
 | P1-T11 | M1.4 | Llama model assembly | P1-T07, P1-T09, P1-T10 | done | cc | tiny model forward shape passes | reviewed by codex; `uv run pytest`: 134 passed, 7 skipped; no findings |
-| P1-T12 | M1.5 | Prefill path | P1-T02, P1-T04, P1-T11 | todo | unassigned | cache filled, final logits returned | |
+| P1-T12 | M1.5 | Prefill path | P1-T02, P1-T04, P1-T11 | done | codex | cache filled, final logits returned | reviewed by cc; fix applied: `KVCache.eval()` added, prefill flushes cache buffers; `uv run pytest`: 141 passed, 7 skipped; no findings |
 | P1-T13 | M1.6 | Greedy decode loop | P1-T12 | todo | unassigned | EOS/max-token stop, deterministic | |
 | P1-T14 | M1.6 | CLI | P1-T13 | todo | unassigned | CLI generates local text | |
 | P1-T15 | M1.7 | MLX eval placement | P1-T13 | todo | unassigned | `mx.eval()` placement documented | |
