@@ -21,6 +21,7 @@ from safetensors.mlx import save_file
 
 from tiny_duo_infer.config import ModelConfig
 from tiny_duo_infer.weights.llama_converter import convert
+from tiny_duo_infer.weights.qwen3_converter import convert as convert_qwen3
 from tiny_duo_infer.weights.loader import load_weights
 
 
@@ -347,6 +348,241 @@ def expected_project_keys(config: ModelConfig) -> set[str]:
                 f"{prefix}.attn.k_proj.weight",
                 f"{prefix}.attn.v_proj.weight",
                 f"{prefix}.attn.o_proj.weight",
+                f"{prefix}.post_attn_norm.weight",
+                f"{prefix}.ffn.gate_proj.weight",
+                f"{prefix}.ffn.up_proj.weight",
+                f"{prefix}.ffn.down_proj.weight",
+            }
+        )
+    return keys
+
+
+# ---------------------------------------------------------------------------
+# Qwen3 converter tests (no model artifacts required)
+# ---------------------------------------------------------------------------
+
+def test_qwen3_convert_maps_hf_keys_to_project_keys() -> None:
+    """All required Qwen3 HF key patterns are translated to project keys."""
+    config = tiny_qwen3_model_config()
+    converted = convert_qwen3(make_qwen3_hf_weights(config), config)
+
+    assert set(converted) == expected_qwen3_project_keys(config)
+    assert "embed_tokens.weight" in converted
+    assert "lm_head.weight" in converted
+    assert "final_norm.weight" in converted
+    assert "layers.0.attn.q_proj.weight" in converted
+    assert "layers.0.attn.k_proj.weight" in converted
+    assert "layers.0.attn.v_proj.weight" in converted
+    assert "layers.0.attn.o_proj.weight" in converted
+    assert "layers.0.attn.q_norm.weight" in converted
+    assert "layers.0.attn.k_norm.weight" in converted
+    assert "layers.0.ffn.gate_proj.weight" in converted
+
+
+def test_qwen3_convert_validates_project_shapes_from_config() -> None:
+    """Qwen3 converter uses A=H*Dh, including A != D for q_proj/o_proj."""
+    config = tiny_qwen3_model_config()
+    converted = convert_qwen3(make_qwen3_hf_weights(config), config)
+    attention_width = config.n_heads * config.head_dim
+    kv_width = config.n_kv_heads * config.head_dim
+
+    assert attention_width != config.d_model
+    assert converted["embed_tokens.weight"].shape == (config.vocab_size, config.d_model)
+    assert converted["lm_head.weight"].shape == (config.vocab_size, config.d_model)
+    assert converted["layers.0.attn.q_proj.weight"].shape == (
+        attention_width,
+        config.d_model,
+    )
+    assert converted["layers.0.attn.k_proj.weight"].shape == (
+        kv_width,
+        config.d_model,
+    )
+    assert converted["layers.0.attn.v_proj.weight"].shape == (
+        kv_width,
+        config.d_model,
+    )
+    assert converted["layers.0.attn.o_proj.weight"].shape == (
+        config.d_model,
+        attention_width,
+    )
+    assert converted["layers.0.attn.q_norm.weight"].shape == (config.head_dim,)
+    assert converted["layers.0.attn.k_norm.weight"].shape == (config.head_dim,)
+    assert converted["layers.0.ffn.down_proj.weight"].shape == (
+        config.d_model,
+        config.intermediate_size,
+    )
+
+
+def test_qwen3_convert_requires_lm_head_weight() -> None:
+    """Qwen3 support treats lm_head.weight as required, not tied from embeddings."""
+    config = tiny_qwen3_model_config()
+    hf_weights = make_qwen3_hf_weights(config)
+    del hf_weights["lm_head.weight"]
+
+    with pytest.raises(ValueError, match="lm_head.weight"):
+        convert_qwen3(hf_weights, config)
+
+
+def test_qwen3_convert_requires_qk_norm_weights() -> None:
+    """Qwen3 checkpoints must include q_norm and k_norm per layer."""
+    config = tiny_qwen3_model_config()
+    hf_weights = make_qwen3_hf_weights(config)
+    del hf_weights["model.layers.0.self_attn.q_norm.weight"]
+
+    with pytest.raises(ValueError, match="layers.0.attn.q_norm.weight"):
+        convert_qwen3(hf_weights, config)
+
+
+def test_qwen3_convert_reports_shape_mismatch() -> None:
+    """Wrong Qwen3 tensor shapes fail during conversion with the HF key name."""
+    config = tiny_qwen3_model_config()
+    hf_weights = make_qwen3_hf_weights(config)
+    hf_weights["model.layers.0.self_attn.o_proj.weight"] = mx.zeros(
+        (config.d_model, config.d_model),
+        dtype=mx.float32,
+    )
+
+    with pytest.raises(ValueError, match="self_attn.o_proj.weight"):
+        convert_qwen3(hf_weights, config)
+
+
+def test_qwen3_convert_validates_qk_norm_shape() -> None:
+    """Q/K norm weights are shared per-head vectors shaped (Dh,), not (H, Dh)."""
+    config = tiny_qwen3_model_config()
+    hf_weights = make_qwen3_hf_weights(config)
+    hf_weights["model.layers.0.self_attn.k_norm.weight"] = mx.zeros(
+        (config.n_kv_heads, config.head_dim),
+        dtype=mx.float32,
+    )
+
+    with pytest.raises(ValueError, match="self_attn.k_norm.weight"):
+        convert_qwen3(hf_weights, config)
+
+
+def test_qwen3_convert_warns_and_ignores_unexpected_hf_key() -> None:
+    """Unexpected Qwen3 HF keys are reported but do not block conversion."""
+    config = tiny_qwen3_model_config()
+    hf_weights = make_qwen3_hf_weights(config)
+    hf_weights["model.layers.99.self_attn.q_norm.weight"] = mx.zeros(
+        (config.head_dim,),
+        dtype=mx.float32,
+    )
+
+    with pytest.warns(UserWarning, match="unexpected HF weight key"):
+        converted = convert_qwen3(hf_weights, config)
+
+    assert "model.layers.99.self_attn.q_norm.weight" not in converted
+
+
+def test_qwen3_convert_rejects_non_qwen3_config() -> None:
+    """The Qwen3 converter should not silently accept another model family."""
+    config = tiny_model_config()
+
+    with pytest.raises(ValueError, match="model_type 'qwen3'"):
+        convert_qwen3({}, config)
+
+
+def tiny_qwen3_model_config() -> ModelConfig:
+    """Return a tiny Qwen3-compatible config for converter unit tests."""
+    return ModelConfig(
+        model_type="qwen3",
+        d_model=32,
+        n_layers=2,
+        n_heads=4,
+        n_kv_heads=2,
+        head_dim=16,
+        intermediate_size=64,
+        vocab_size=128,
+        max_seq_len=128,
+        rope_theta=1000000.0,
+        rms_norm_eps=1e-6,
+    )
+
+
+def make_qwen3_hf_weights(config: ModelConfig) -> dict[str, mx.array]:
+    """Build a complete synthetic HF Qwen3 weight dict for a tiny config."""
+    attention_width = config.n_heads * config.head_dim
+    kv_width = config.n_kv_heads * config.head_dim
+    weights: dict[str, mx.array] = {
+        "model.embed_tokens.weight": mx.zeros(
+            (config.vocab_size, config.d_model),
+            dtype=mx.float32,
+        ),
+        "model.norm.weight": mx.zeros((config.d_model,), dtype=mx.float32),
+        "lm_head.weight": mx.ones(
+            (config.vocab_size, config.d_model),
+            dtype=mx.float32,
+        ),
+    }
+
+    for layer_idx in range(config.n_layers):
+        prefix = f"model.layers.{layer_idx}"
+        weights.update(
+            {
+                f"{prefix}.input_layernorm.weight": mx.zeros(
+                    (config.d_model,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.q_proj.weight": mx.zeros(
+                    (attention_width, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.k_proj.weight": mx.zeros(
+                    (kv_width, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.v_proj.weight": mx.zeros(
+                    (kv_width, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.o_proj.weight": mx.zeros(
+                    (config.d_model, attention_width),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.q_norm.weight": mx.zeros(
+                    (config.head_dim,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.self_attn.k_norm.weight": mx.zeros(
+                    (config.head_dim,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.post_attention_layernorm.weight": mx.zeros(
+                    (config.d_model,),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.gate_proj.weight": mx.zeros(
+                    (config.intermediate_size, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.up_proj.weight": mx.zeros(
+                    (config.intermediate_size, config.d_model),
+                    dtype=mx.float32,
+                ),
+                f"{prefix}.mlp.down_proj.weight": mx.zeros(
+                    (config.d_model, config.intermediate_size),
+                    dtype=mx.float32,
+                ),
+            }
+        )
+
+    return weights
+
+
+def expected_qwen3_project_keys(config: ModelConfig) -> set[str]:
+    """Return the complete project-key set expected after Qwen3 conversion."""
+    keys = {"embed_tokens.weight", "final_norm.weight", "lm_head.weight"}
+    for layer_idx in range(config.n_layers):
+        prefix = f"layers.{layer_idx}"
+        keys.update(
+            {
+                f"{prefix}.input_norm.weight",
+                f"{prefix}.attn.q_proj.weight",
+                f"{prefix}.attn.k_proj.weight",
+                f"{prefix}.attn.v_proj.weight",
+                f"{prefix}.attn.o_proj.weight",
+                f"{prefix}.attn.q_norm.weight",
+                f"{prefix}.attn.k_norm.weight",
                 f"{prefix}.post_attn_norm.weight",
                 f"{prefix}.ffn.gate_proj.weight",
                 f"{prefix}.ffn.up_proj.weight",
