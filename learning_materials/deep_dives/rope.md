@@ -54,6 +54,10 @@ In `Llama-3.2-1B`, the base frequency parameter $\theta$ (`rope_theta`) is set t
 * A larger $\theta$ means the angles rotate more slowly along the dimensions.
 * This slower rotation prevents high frequencies from wrapping around quickly, enabling the model to keep tokens mathematically distinct across long context windows (up to $131,072$ tokens).
 
+In `Qwen3-0.6B`, `rope_theta` is larger (`1,000,000.0`) and `head_dim` is
+explicitly read from config (`128`). The RoPE math is unchanged; the table is
+just wider because each head vector has more dimensions.
+
 ---
 
 ## 3. Precomputing Frequencies
@@ -157,3 +161,46 @@ Decode Step 2:               [4]
 
 > [!WARNING]  
 > If the `offset` parameter is omitted or hardcoded to `0`, every generated decode token will be encoded at position `0` instead of its true sequence index. This completely scrambles relative distances in the attention layer, causing the model to produce gibberish after the first token. Decoupling the `offset` via the engine's cache manager is what keeps the generation loop coherent.
+
+---
+
+## 6. Qwen3: Q/K Norm Before RoPE
+
+Phase 1.5 adds Qwen3 attention, which has one important operation immediately
+before RoPE: per-head RMSNorm on Q and K.
+
+The correct Qwen3 ordering is:
+
+```text
+x
+  -> q_proj / k_proj / v_proj
+  -> reshape Q to (B, S, H, Dh)
+  -> reshape K to (B, S, Hkv, Dh)
+  -> q_norm(Q), k_norm(K)
+  -> apply_rope(Q), apply_rope(K)
+  -> KV cache update/read
+```
+
+The Q/K norm weights have shape `(Dh,)`. They are not separate weights per
+head; the same vector is applied independently to every query head, and the
+same is true for every key head.
+
+Why before RoPE? RMSNorm changes vector length and scale. RoPE is a rotation
+that preserves vector length but changes coordinate orientation based on
+position. If norm is applied after RoPE, the vectors entering the attention dot
+product are not the vectors Qwen3 was trained to use. Shape tests may still
+pass, but attention scores will differ.
+
+For comparison:
+
+```text
+LlamaAttention:
+  project -> reshape -> RoPE -> cache -> GQA
+
+Qwen3Attention:
+  project -> reshape -> Q/K norm -> RoPE -> cache -> GQA
+```
+
+The engine does not need to know this distinction. It still passes
+`position_offset` into the model, and the model-family-specific attention class
+decides what happens before RoPE.

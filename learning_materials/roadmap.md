@@ -1,12 +1,15 @@
 # Learning Roadmap
 
-This document is a guided reading order for the completed Phase 1 engine. Use
-it to study how local Llama inference works in this repository, from model
-artifacts through token generation.
+This document is a guided reading order for the completed Phase 1 and Phase 1.5
+engine. Use it to study how local Llama inference works first, then how the
+same engine was extended to Qwen3-0.6B without changing the prefill/decode
+control flow.
 
 Phase 1 is intentionally learning-first: the goal is not to hide inference
 behind a library, but to make the control flow, tensor shapes, KV-cache writes,
-and sampling choices visible.
+and sampling choices visible. Phase 1.5 adds a second model family so the next
+lesson is model portability: which pieces are engine-generic, and which pieces
+belong to a specific model architecture.
 
 ## How To Read
 
@@ -30,14 +33,17 @@ Read:
 - `pyproject.toml`
 - `docs/phases/phase-1-mlx-single-user.md`
 - `docs/phases/phase-1-taskboard.md`
+- `docs/phases/phase-1.5-qwen3-mlx.md`
+- `docs/phases/phase-1.5-taskboard.md`
 - `tests/conftest.py`
 
 Learn:
 
 - Why Phase 1 is MLX-only.
+- Why Phase 1.5 adds model-family portability before backend portability.
 - Why `transformers` is dev/test only.
-- Why tests use `TINY_CONFIG` instead of real Llama weights.
-- Which tasks are required for minimum Phase 1 completion.
+- Why tests use tiny Llama and Qwen3 configs instead of real weights.
+- Which tasks are required for Phase 1 and Phase 1.5 completion.
 
 Try:
 
@@ -54,8 +60,10 @@ Read:
 Learn:
 
 - How Hugging Face `config.json` maps into `ModelConfig`.
-- Why the loader rejects non-Llama configs early.
-- Why `hidden_size % num_attention_heads == 0` matters.
+- Why the loader accepts only explicitly supported model families.
+- Why Llama can derive `head_dim` from `hidden_size // num_attention_heads`.
+- Why Qwen3 stores `head_dim` explicitly and can have
+  `n_heads * head_dim != d_model`.
 - Why `num_attention_heads % num_key_value_heads == 0` matters for GQA.
 
 Try:
@@ -74,10 +82,15 @@ Read:
 Learn:
 
 - Why runtime uses `tokenizers`, not `AutoTokenizer`.
-- How `tokenizer.json` and `tokenizer_config.json` work together.
+- How `tokenizer.json`, `tokenizer_config.json`, and sometimes `config.json`
+  work together.
 - How BOS/EOS IDs are resolved from integer fields, token strings, or
-  AddedToken dictionaries.
+- AddedToken dictionaries.
+- Why Qwen3 resolves BOS from `config.json` while EOS comes from tokenizer
+  metadata.
 - Why registered special tokens are required for `skip_special_tokens=True`.
+- Why Qwen3 plain prompt mode does not synthesize a BOS token when
+  `add_bos_token=false`.
 
 Try:
 
@@ -112,6 +125,7 @@ Try:
 Read:
 
 - `tiny_duo_infer/weights/llama_converter.py`
+- `tiny_duo_infer/weights/qwen3_converter.py`
 - `tests/test_weights.py` converter tests
 
 Learn:
@@ -120,6 +134,10 @@ Learn:
 - Which tensor shapes are expected for Q, K, V, O, FFN, norms, embeddings, and
   LM head.
 - How tied embeddings are represented by reusing the same array object.
+- Why Qwen3 requires a separate `lm_head.weight` even though its config
+  advertises tied embeddings.
+- Why Qwen3 converter validates `q_norm.weight` and `k_norm.weight` as
+  `(head_dim,)`.
 - Why missing keys fail, but unexpected keys warn and are ignored.
 
 Try:
@@ -173,7 +191,7 @@ Read:
 
 - `tiny_duo_infer/layers/normalization.py`
 - `tiny_duo_infer/layers/rope.py`
-- `tests/test_layers.py` normalization and RoPE tests
+- `tests/test_layers.py` normalization, Q/K norm, and RoPE tests
 
 Learn:
 
@@ -182,6 +200,8 @@ Learn:
 - How RoPE precomputes frequency tables.
 - How even/odd head-dimension pairs are rotated.
 - Why decode uses an absolute `position_offset`.
+- Why Qwen3 applies Q/K RMSNorm after projection and head reshape, before
+  RoPE.
 
 Try:
 
@@ -197,9 +217,13 @@ Read:
 
 Learn:
 
-- How Q, K, and V projections reshape to `(B, S, H, Dh)` and
-  `(B, S, Hkv, Dh)`.
+- How Llama projections reshape directly to `(B, S, H, Dh)` and
+  `(B, S, Hkv, Dh)` because `H * Dh == D`.
+- How Qwen3 first projects Q to attention width `A = H * Dh`, where `A` can
+  differ from hidden size `D`.
 - Why Llama-3.2-1B has fewer KV heads than query heads.
+- Why Qwen3 still uses the same GQA and KV-cache protocol even though its
+  attention width differs from `d_model`.
 - How GQA repeats KV heads along the head axis.
 - How attention writes the current step into the KV cache and reads back the
   full valid prefix.
@@ -248,7 +272,44 @@ Try:
 - Trace one forward pass for input IDs shaped `(1, S)`.
 - Explain why logits have shape `(B, S, V)`.
 
-### 12. Engine Prefill
+### 12. Qwen3 Model Portability
+
+Read:
+
+- `docs/phases/phase-1.5-qwen3-mlx.md`
+- `tiny_duo_infer/models/qwen3.py`
+- `tiny_duo_infer/layers/attention.py` `Qwen3Attention`
+- `tiny_duo_infer/weights/qwen3_converter.py`
+- `tests/test_config.py` Qwen3 tests
+- `tests/test_layers.py` Qwen3 attention tests
+- `tests/test_model.py` Qwen3 model tests
+- `tests/test_engine.py` model dispatch tests
+- `tests/test_tokenizer.py` Qwen3 tokenizer tests
+
+Learn:
+
+- Which parts stayed engine-generic: `Engine.generate()`, `KVCache`,
+  sampling, CLI argument shape, and the model forward signature.
+- Which parts are model-family-specific: config validation, attention class,
+  model assembly class, weight converter, and tokenizer metadata quirks.
+- Why Phase 1.5 uses explicit `Qwen3Block` / `Qwen3Model` instead of hiding
+  Qwen3 behavior behind conditionals in `LlamaBlock`.
+- Why Qwen3 attention width `A = H * Dh` can be different from hidden size
+  `D`.
+- Why Q/K RMSNorm belongs between head reshape and RoPE.
+- Why `Engine.from_model_path()` dispatches by `config.model_type`, while the
+  prefill and decode loops stay unchanged.
+
+Try:
+
+- Compare `LlamaAttention` and `Qwen3Attention` line by line.
+- For the tiny Qwen3 fixture, compute `A = H * Dh` and explain why `A != D`.
+- Trace how `model.layers.0.self_attn.q_norm.weight` becomes
+  `layers.0.attn.q_norm.weight`.
+- Run `QWEN_MODEL_PATH=models/qwen3-0.6b uv run pytest --run-slow -k qwen3`
+  if local Qwen3 artifacts are available.
+
+### 13. Engine Prefill
 
 Read:
 
@@ -268,7 +329,7 @@ Try:
 - Trace `engine.prefill_token_ids([a, b, c])`.
 - Explain what is valid in the cache before and after `cache.advance(3)`.
 
-### 13. Decode Loop
+### 14. Decode Loop
 
 Read:
 
@@ -289,7 +350,7 @@ Try:
 - Trace `generate(prompt, max_new_tokens=4, temperature=0.0)` on paper.
 - Count model calls, cache advances, yielded fragments, and eval calls.
 
-### 14. Sampling
+### 15. Sampling
 
 Read:
 
@@ -311,7 +372,7 @@ Try:
 - For logits `[1, 2, 3]`, compute greedy output.
 - For a simple distribution, identify the top-p nucleus by hand.
 
-### 15. CLI
+### 16. CLI
 
 Read:
 
@@ -324,13 +385,19 @@ Learn:
 - How argument parsing maps to `Engine.from_model_path()` and
   `Engine.generate()`.
 - Why CLI tests use a fake engine instead of real model artifacts.
+- Why users do not pass `--model-type`; model family is inferred from
+  `config.json`.
+- Why Qwen3 is currently plain prompt-to-completion mode, not chat-template
+  mode.
 
 Try:
 
 - Run `uv run python -m tiny_duo_infer.cli --help`.
 - Explain why `--temperature 0.0` gives deterministic greedy output.
+- Run a short Qwen3 smoke if artifacts exist:
+  `uv run python -m tiny_duo_infer.cli --model-path models/qwen3-0.6b --prompt "The capital of France is" --max-new-tokens 8 --temperature 0.0`.
 
-### 16. MLX Eval Placement
+### 17. MLX Eval Placement
 
 Read:
 
@@ -351,7 +418,7 @@ Try:
 - Explain why adding `mx.eval()` inside attention would be slower and harder to
   reason about.
 
-### 17. Benchmark And KV Memory
+### 18. Benchmark And KV Memory
 
 Read:
 
@@ -365,25 +432,33 @@ Learn:
 - KV memory formula:
   `2 * n_layers * n_kv_heads * seq_len * head_dim * bytes_per_element`.
 - Why Llama-3.2-1B at `T=1024` uses about 32 MB of KV cache in bfloat16.
+- Why Qwen3-0.6B uses a different KV memory slope:
+  `L=28`, `Hkv=8`, `Dh=128`, so `T=1024` is about 112 MB in bfloat16.
 
 Try:
 
 - Run `uv run python scripts/benchmark.py --help`.
 - Compute KV memory for `T=2048` by hand and compare to the script.
+- Run Qwen3 benchmark if artifacts exist:
+  `uv run python scripts/benchmark.py --model-path models/qwen3-0.6b --n-tokens 20 --max-seq-len 256 --show-output`.
 
-### 18. Phase 1 Handoff And Real-Model Smoke
+### 19. Phase Handoffs And Real-Model Smoke
 
 Read:
 
 - `docs/phases/phase-1-handoff.md`
 - `docs/phases/phase-1-taskboard.md`
+- `docs/phases/phase-1.5-qwen3-mlx.md`
+- `docs/phases/phase-1.5-taskboard.md`
 
 Learn:
 
 - Which verification commands were run.
 - What was checked with real Llama-3.2-1B weights.
+- What was checked with real Qwen3-0.6B weights.
 - Why semantic quality is not the smoke-test gate.
 - How the real-model smoke exposed the bfloat16 loader issue.
+- How Phase 1.5 verified model-family portability before backend portability.
 - What remains out of scope until later phases.
 
 Try:
@@ -400,15 +475,15 @@ The completed Phase 1 pipeline is:
 config.json
   -> ModelConfig
 
-tokenizer.json + tokenizer_config.json
+tokenizer.json + tokenizer_config.json + optional config.json token metadata
   -> Tokenizer
 
 model.safetensors / shards
   -> raw HF weight dict
-  -> project weight dict
+  -> project weight dict via llama_converter or qwen3_converter
 
 project weight dict
-  -> LlamaModel.load_weights()
+  -> LlamaModel.load_weights() or Qwen3Model.load_weights()
   -> Embedding / Linear / RMSNorm arrays
 
 prompt text
@@ -443,12 +518,15 @@ generated token
 11. `tiny_duo_infer/layers/attention.py`
 12. `tiny_duo_infer/layers/feedforward.py`
 13. `tiny_duo_infer/models/llama.py`
-14. `tiny_duo_infer/sampling.py`
-15. `tiny_duo_infer/engine.py`
-16. `tiny_duo_infer/cli.py`
-17. `scripts/benchmark.py`
-18. Matching `tests/` files in the same order
-19. `docs/phases/phase-1-handoff.md`
+14. `tiny_duo_infer/models/qwen3.py`
+15. `tiny_duo_infer/weights/qwen3_converter.py`
+16. `tiny_duo_infer/sampling.py`
+17. `tiny_duo_infer/engine.py`
+18. `tiny_duo_infer/cli.py`
+19. `scripts/benchmark.py`
+20. Matching `tests/` files in the same order
+21. `docs/phases/phase-1-handoff.md`
+22. `docs/phases/phase-1.5-qwen3-mlx.md`
 
 ## What To Write Down
 

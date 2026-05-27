@@ -15,7 +15,8 @@ Grouped Query Attention (GQA) addresses this by partitioning $H$ query heads int
 $$\text{Attention}(Q_g, K_g, V_g) = \text{softmax}\left( \frac{Q_g (K_g^{\text{expanded}})^T}{\sqrt{D_h}} + M \right) V_g^{\text{expanded}}$$
 
 Where:
-* $D_h$: Head dimension ($D_h = D / H$).
+* $D_h$: Head dimension. For Llama this is $D / H$; for Qwen3 it is read
+  explicitly from `config.json`.
 * $K_g^{\text{expanded}}, V_g^{\text{expanded}}$: The shared key and value head repeated $n_{\text{groups}}$ times to align with the query head count.
 * $M$: The causal attention mask blocking attention to future tokens.
 
@@ -28,6 +29,31 @@ Where:
 | $H_{\text{kv}}$ | `n_kv_heads` | $8$ | Number of key/value heads. |
 | $D_h$ | `head_dim` | $64$ | Dimensionality of each head ($2048 / 32$). |
 | $n_{\text{groups}}$ | `n_groups` | $4$ | The query-to-KV ratio ($H / H_{\text{kv}} = 32 / 8$). |
+
+### Hyperparameters in `Qwen3-0.6B`
+
+Qwen3 keeps the same GQA idea but breaks an assumption that was true for
+Llama: attention width is not equal to hidden size.
+
+| Symbol | Hyperparameter | Value | Description |
+| :--- | :--- | :--- | :--- |
+| $D$ | `d_model` | $1024$ | The residual-stream hidden size. |
+| $H$ | `n_heads` | $16$ | Number of query attention heads. |
+| $H_{\text{kv}}$ | `n_kv_heads` | $8$ | Number of key/value heads. |
+| $D_h$ | `head_dim` | $128$ | Explicit per-head dimension from config. |
+| $A$ | `n_heads * head_dim` | $2048$ | Attention projection width, not equal to $D$. |
+| $n_{\text{groups}}$ | `n_groups` | $2$ | The query-to-KV ratio ($H / H_{\text{kv}} = 16 / 8$). |
+
+This is the main Phase 1.5 portability lesson. The KV cache still stores
+`(B, Hkv, T, Dh)`, and `n_groups` is still derived as `H // Hkv`. The
+projections around attention change:
+
+```text
+q_proj: D -> A
+k_proj: D -> Hkv * Dh
+v_proj: D -> Hkv * Dh
+o_proj: A -> D
+```
 
 ---
 
@@ -48,6 +74,28 @@ At forward-pass time, hidden state tensors must be sliced, projected, transposed
 | **8** | Apply Causal Mask & Softmax | `_apply_causal_mask(...)` | $(B, H, S, T)$ |
 | **9** | Weighted sum with value activations | `weights @ v_expanded` | $(B, H, S, D_h)$ |
 | **10** | Merge heads & run Output projection | `reshape(...)` + `self.o_proj(...)` | $(B, S, D)$ |
+
+For `Qwen3Attention.forward`, the same GQA/cache geometry applies, with two
+extra details before RoPE:
+
+| Step | Operation | Shape |
+| :--- | :--- | :--- |
+| **1a** | `q_proj(x)` | $(B, S, A)$ where $A = H \cdot D_h$ |
+| **1b** | reshape Q | $(B, S, H, D_h)$ |
+| **1c** | reshape K/V | $(B, S, H_{\text{kv}}, D_h)$ |
+| **2a** | `q_norm(q)`, `k_norm(k)` | same shapes; one `(Dh,)` weight shared across heads |
+| **2b** | apply RoPE to normalized Q/K | same shapes |
+| **10** | merge heads, then `o_proj` | $(B, S, A) \rightarrow (B, S, D)$ |
+
+The order is important:
+
+```text
+project -> reshape into heads -> q_norm/k_norm -> RoPE -> cache/update -> GQA
+```
+
+Applying Q/K norm after RoPE changes the vectors that enter the dot product and
+therefore changes attention scores. That is a model-architecture bug, not a
+small refactor.
 
 ### Visualizing the GQA Head Expansion
 
@@ -88,6 +136,10 @@ graph TD
 
 > [!IMPORTANT]  
 > The head repetition **must** occur along `axis=1` (the head axis). Repeating along `axis=2` would repeat sequence positions instead, leading to a severe silent logical bug.
+
+For Qwen3-0.6B, the same rule holds with fewer groups: `H=16`, `Hkv=8`, so each
+KV head is repeated twice instead of four times. The implementation should not
+special-case Llama's group count.
 
 ---
 
@@ -140,14 +192,24 @@ $$\text{future\_mask} = \begin{pmatrix} 0 & 0 & 0 & 0 \end{pmatrix}$$
 
 In a single-user engine, `KVCache` acts as a request-scoped stateful buffer. It pre-allocates contiguous memory for the maximum possible context length `max_seq_len` to avoid memory fragmentation.
 
-To maintain perfect synchronization across all 16 layers of the transformer, `KVCache` decouples its operations into a **Write Phase** and a **Commit Phase**:
+To maintain perfect synchronization across all transformer layers, `KVCache`
+decouples its operations into a **Write Phase** and a **Commit Phase**:
+
+```text
+Llama-3.2-1B:  L=16, Hkv=8, Dh=64
+Qwen3-0.6B:    L=28, Hkv=8, Dh=128
+```
+
+Phase 1.5 keeps the exact same cache protocol for Qwen3. Only the dimensions
+change. The engine still calls `cache.advance()` once per prompt or generated
+token step; attention layers never own `current_len`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant E as Engine (cli.py / engine.py)
-    participant M as LlamaModel (models/llama.py)
-    participant L as LlamaAttention (layers/attention.py)
+    participant M as Model (LlamaModel or Qwen3Model)
+    participant L as Attention (LlamaAttention or Qwen3Attention)
     participant C as KVCache (cache.py)
 
     Note over E,C: PREFILL STEP (Ingesting Prompt)
@@ -184,7 +246,7 @@ Let's look at what happens under the hood in the `_keys` and `_values` buffers (
 ```
 
 #### 2. After Prefill (`prompt_len = 3`)
-* `LlamaAttention` calls `update(position=0, new_len=3)`
+* attention calls `update(position=0, new_len=3)`
 * Slices `[0:3]` are populated with prompt keys and values.
 * Cache slice `[:3]` is returned.
 * `Engine` calls `advance(3)` $\rightarrow$ `current_len = 3`
@@ -194,7 +256,7 @@ Let's look at what happens under the hood in the `_keys` and `_values` buffers (
 ```
 
 #### 3. Decode Step 1
-* `LlamaAttention` calls `update(position=3, new_len=1)`
+* attention calls `update(position=3, new_len=1)`
 * Slot `[3]` is populated with the new token's key/value.
 * Cache slice `[:4]` is returned.
 * `Engine` calls `advance(1)` $\rightarrow$ `current_len = 4`
@@ -204,7 +266,7 @@ Let's look at what happens under the hood in the `_keys` and `_values` buffers (
 ```
 
 > [!WARNING]  
-> If an agent attempts to read `cache.current_len` inside `LlamaAttention.forward` to determine the write target, it creates race conditions. Because all layers execute in a single forward pass, modifying `current_len` mid-run would mean Layer 15 sees a different index than Layer 0. **Decoupled passing of `position_offset` resolves this entirely.**
+> If an agent attempts to read `cache.current_len` inside an attention layer to determine the write target, it creates race conditions. Because all layers execute in a single forward pass, modifying `current_len` mid-run would mean the last layer sees a different index than the first layer. **Decoupled passing of `position_offset` resolves this entirely.**
 
 ---
 
