@@ -80,6 +80,12 @@ def tiny_config() -> dict:
 
 
 @pytest.fixture
+def tiny_qwen3_config() -> dict:
+    """Return the shared tiny Qwen3 config dict for Phase 1.5 shape tests."""
+    return dict(TINY_QWEN3_CONFIG)
+
+
+@pytest.fixture
 def tiny_model_config() -> ModelConfig:
     """Return the shared tiny model config as a typed ModelConfig dataclass."""
     return ModelConfig(
@@ -94,4 +100,26 @@ def tiny_model_config() -> ModelConfig:
         max_seq_len=TINY_CONFIG["max_seq_len"],
         rope_theta=TINY_CONFIG["rope_theta"],
         rms_norm_eps=TINY_CONFIG["rms_norm_eps"],
+    )
+
+
+@pytest.fixture
+def tiny_qwen3_model_config() -> ModelConfig:
+    """Return the shared tiny Qwen3 config as a typed ModelConfig dataclass.
+
+    Key property: H * Dh = 4 * 16 = 64 != D = 32. This exercises the A != D
+    attention projection shape that is unique to Qwen3.
+    """
+    return ModelConfig(
+        model_type=TINY_QWEN3_CONFIG["model_type"],
+        d_model=TINY_QWEN3_CONFIG["d_model"],
+        n_layers=TINY_QWEN3_CONFIG["n_layers"],
+        n_heads=TINY_QWEN3_CONFIG["n_heads"],
+        n_kv_heads=TINY_QWEN3_CONFIG["n_kv_heads"],
+        head_dim=TINY_QWEN3_CONFIG["head_dim"],
+        intermediate_size=TINY_QWEN3_CONFIG["intermediate_size"],
+        vocab_size=TINY_QWEN3_CONFIG["vocab_size"],
+        max_seq_len=TINY_QWEN3_CONFIG["max_seq_len"],
+        rope_theta=TINY_QWEN3_CONFIG["rope_theta"],
+        rms_norm_eps=TINY_QWEN3_CONFIG["rms_norm_eps"],
     )

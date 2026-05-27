@@ -18,7 +18,7 @@ import pytest
 
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig
-from tiny_duo_infer.layers.attention import LlamaAttention, _apply_causal_mask
+from tiny_duo_infer.layers.attention import LlamaAttention, Qwen3Attention, _apply_causal_mask
 from tiny_duo_infer.layers.feedforward import SwiGLUFFN
 from tiny_duo_infer.layers.normalization import RMSNorm
 from tiny_duo_infer.layers.rope import apply_rope, precompute_freqs
@@ -379,6 +379,172 @@ def test_attention_load_weights_routes_to_projection_modules(tiny_model_config):
     assert attn.k_proj.weight is k_w
     assert attn.v_proj.weight is v_w
     assert attn.o_proj.weight is o_w
+
+
+# ---------------------------------------------------------------------------
+# Qwen3Attention
+# ---------------------------------------------------------------------------
+
+def _qwen3_attention_with_random_weights(config: ModelConfig) -> Qwen3Attention:
+    """Create a Qwen3Attention layer with synthetic weights including q/k norms."""
+    cos_sin = precompute_freqs(config.head_dim, config.max_seq_len, config.rope_theta)
+    attn = Qwen3Attention(config, cos_sin)
+    A = config.n_heads * config.head_dim
+    Akv = config.n_kv_heads * config.head_dim
+    attn.q_proj.weight = mx.random.normal((A, config.d_model))
+    attn.k_proj.weight = mx.random.normal((Akv, config.d_model))
+    attn.v_proj.weight = mx.random.normal((Akv, config.d_model))
+    attn.o_proj.weight = mx.random.normal((config.d_model, A))
+    attn.q_norm.weight = mx.ones((config.head_dim,))
+    attn.k_norm.weight = mx.ones((config.head_dim,))
+    return attn
+
+
+def test_qwen3_attention_init_creates_projections_and_norm_modules(
+    tiny_qwen3_model_config,
+) -> None:
+    """Qwen3Attention exposes Q/K/V/O Linear projections and Q/K RMSNorm layers."""
+    cos_sin = precompute_freqs(
+        tiny_qwen3_model_config.head_dim,
+        tiny_qwen3_model_config.max_seq_len,
+        tiny_qwen3_model_config.rope_theta,
+    )
+    attn = Qwen3Attention(tiny_qwen3_model_config, cos_sin)
+
+    assert isinstance(attn.q_proj, Linear)
+    assert isinstance(attn.k_proj, Linear)
+    assert isinstance(attn.v_proj, Linear)
+    assert isinstance(attn.o_proj, Linear)
+    assert isinstance(attn.q_norm, RMSNorm)
+    assert isinstance(attn.k_norm, RMSNorm)
+    assert attn.q_norm.d_model == tiny_qwen3_model_config.head_dim
+    assert attn.k_norm.d_model == tiny_qwen3_model_config.head_dim
+
+
+def test_qwen3_attention_projection_dimensions_use_attention_width(
+    tiny_qwen3_model_config,
+) -> None:
+    """q_proj and o_proj use A = H * Dh, not D. For tiny Qwen3, A = 64 != D = 32."""
+    cos_sin = precompute_freqs(
+        tiny_qwen3_model_config.head_dim,
+        tiny_qwen3_model_config.max_seq_len,
+        tiny_qwen3_model_config.rope_theta,
+    )
+    attn = Qwen3Attention(tiny_qwen3_model_config, cos_sin)
+    A = tiny_qwen3_model_config.n_heads * tiny_qwen3_model_config.head_dim
+    D = tiny_qwen3_model_config.d_model
+
+    assert A != D, "fixture must exercise the A != D case"
+    assert attn.q_proj.out_features == A
+    assert attn.o_proj.in_features == A
+    assert attn.k_proj.out_features == tiny_qwen3_model_config.n_kv_heads * tiny_qwen3_model_config.head_dim
+    assert attn.v_proj.out_features == tiny_qwen3_model_config.n_kv_heads * tiny_qwen3_model_config.head_dim
+
+
+def test_qwen3_attention_forward_prefill_shape(tiny_qwen3_model_config) -> None:
+    """Prefill forward returns (B, S, D) even when A = H * Dh != D."""
+    attn = _qwen3_attention_with_random_weights(tiny_qwen3_model_config)
+    cache = KVCache(
+        n_layers=tiny_qwen3_model_config.n_layers,
+        n_kv_heads=tiny_qwen3_model_config.n_kv_heads,
+        max_seq_len=tiny_qwen3_model_config.max_seq_len,
+        head_dim=tiny_qwen3_model_config.head_dim,
+    )
+    S = 4
+    x = mx.random.normal((1, S, tiny_qwen3_model_config.d_model))
+
+    out = attn(x, cache, layer_idx=0, position_offset=0)
+    mx.eval(out)
+
+    assert out.shape == x.shape
+
+
+def test_qwen3_attention_forward_decode_shape(tiny_qwen3_model_config) -> None:
+    """Decode step returns (B, 1, D) after a prefill with the same Qwen3 config."""
+    attn = _qwen3_attention_with_random_weights(tiny_qwen3_model_config)
+    cache = KVCache(
+        n_layers=tiny_qwen3_model_config.n_layers,
+        n_kv_heads=tiny_qwen3_model_config.n_kv_heads,
+        max_seq_len=tiny_qwen3_model_config.max_seq_len,
+        head_dim=tiny_qwen3_model_config.head_dim,
+    )
+    prompt = mx.random.normal((1, 3, tiny_qwen3_model_config.d_model))
+    attn(prompt, cache, layer_idx=0, position_offset=0)
+    cache.advance(3)
+
+    token = mx.random.normal((1, 1, tiny_qwen3_model_config.d_model))
+    out = attn(token, cache, layer_idx=0, position_offset=cache.current_len)
+    mx.eval(out)
+
+    assert out.shape == token.shape
+
+
+def test_qwen3_attention_qk_norm_has_measurable_effect(tiny_qwen3_model_config) -> None:
+    """Changing q_norm weights changes the attention output, confirming norm is applied.
+
+    Uses S=2 (prefill with two tokens) so the second query attends to both key
+    positions, making softmax sensitive to score magnitude. With S=1, T=1 the
+    single-element softmax is always 1.0 regardless of the scale applied to Q.
+    """
+    cos_sin = precompute_freqs(
+        tiny_qwen3_model_config.head_dim,
+        tiny_qwen3_model_config.max_seq_len,
+        tiny_qwen3_model_config.rope_theta,
+    )
+    x = mx.random.normal((1, 2, tiny_qwen3_model_config.d_model))
+    proj_weights = {
+        "q": mx.random.normal((tiny_qwen3_model_config.n_heads * tiny_qwen3_model_config.head_dim, tiny_qwen3_model_config.d_model)),
+        "k": mx.random.normal((tiny_qwen3_model_config.n_kv_heads * tiny_qwen3_model_config.head_dim, tiny_qwen3_model_config.d_model)),
+        "v": mx.random.normal((tiny_qwen3_model_config.n_kv_heads * tiny_qwen3_model_config.head_dim, tiny_qwen3_model_config.d_model)),
+        "o": mx.random.normal((tiny_qwen3_model_config.d_model, tiny_qwen3_model_config.n_heads * tiny_qwen3_model_config.head_dim)),
+    }
+
+    def make_attn(q_norm_scale: float) -> Qwen3Attention:
+        attn = Qwen3Attention(tiny_qwen3_model_config, cos_sin)
+        attn.q_proj.weight = proj_weights["q"]
+        attn.k_proj.weight = proj_weights["k"]
+        attn.v_proj.weight = proj_weights["v"]
+        attn.o_proj.weight = proj_weights["o"]
+        attn.q_norm.weight = mx.full((tiny_qwen3_model_config.head_dim,), q_norm_scale)
+        attn.k_norm.weight = mx.ones((tiny_qwen3_model_config.head_dim,))
+        return attn
+
+    cache1 = KVCache(
+        n_layers=tiny_qwen3_model_config.n_layers,
+        n_kv_heads=tiny_qwen3_model_config.n_kv_heads,
+        max_seq_len=tiny_qwen3_model_config.max_seq_len,
+        head_dim=tiny_qwen3_model_config.head_dim,
+    )
+    cache2 = KVCache(
+        n_layers=tiny_qwen3_model_config.n_layers,
+        n_kv_heads=tiny_qwen3_model_config.n_kv_heads,
+        max_seq_len=tiny_qwen3_model_config.max_seq_len,
+        head_dim=tiny_qwen3_model_config.head_dim,
+    )
+    out1 = make_attn(1.0)(x, cache1, layer_idx=0, position_offset=0)
+    out2 = make_attn(2.0)(x, cache2, layer_idx=0, position_offset=0)
+    mx.eval(out1, out2)
+
+    assert not mx.allclose(out1, out2).item()
+
+
+def test_qwen3_attention_load_weights_routes_to_norm_modules(
+    tiny_qwen3_model_config,
+) -> None:
+    """load_weights() dot-path routing populates q_norm and k_norm weight attributes."""
+    cos_sin = precompute_freqs(
+        tiny_qwen3_model_config.head_dim,
+        tiny_qwen3_model_config.max_seq_len,
+        tiny_qwen3_model_config.rope_theta,
+    )
+    attn = Qwen3Attention(tiny_qwen3_model_config, cos_sin)
+    qn_w = mx.ones((tiny_qwen3_model_config.head_dim,))
+    kn_w = mx.ones((tiny_qwen3_model_config.head_dim,)) * 2.0
+
+    attn.load_weights({"q_norm.weight": qn_w, "k_norm.weight": kn_w})
+
+    assert attn.q_norm.weight is qn_w
+    assert attn.k_norm.weight is kn_w
 
 
 # ---------------------------------------------------------------------------
