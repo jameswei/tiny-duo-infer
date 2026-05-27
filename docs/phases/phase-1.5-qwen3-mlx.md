@@ -238,6 +238,8 @@ Parsing rules:
 - For Llama configs without `head_dim`, derive `head_dim` as
   `hidden_size // num_attention_heads`.
 - For Qwen3 configs with `head_dim`, use the explicit value.
+- `head_dim` becomes a stored `ModelConfig` field. `n_groups` remains a derived
+  property computed as `n_heads // n_kv_heads`.
 - Validate `n_heads % n_kv_heads == 0`.
 - Validate `n_heads * head_dim` is positive.
 - Do not require `d_model == n_heads * head_dim`; Qwen3-0.6B intentionally
@@ -247,6 +249,8 @@ Parsing rules:
 - Do not read `qk_norm` as a required HF config field. Derive it from
   `model_type`: Qwen3 uses Q/K norm, Llama does not. The converter must still
   validate this by requiring Qwen3 `q_norm.weight` and `k_norm.weight` keys.
+  If a later phase adds a third model family with Q/K norm, promote this into
+  an explicit model-family capability rather than growing ad hoc checks.
 
 This is a breaking dataclass change for tests and fixtures that construct
 `ModelConfig` directly. As part of the config task, update the existing
@@ -361,14 +365,35 @@ scores = q @ k.transpose(...) / sqrt(head_dim)
 
 ---
 
+## Model Assembly
+
+Prefer an explicit `Qwen3Block` and `Qwen3Model` alongside the existing
+`LlamaBlock` and `LlamaModel`.
+
+`LlamaBlock` should continue to instantiate `LlamaAttention`. `Qwen3Block`
+should instantiate `Qwen3Attention`. Both model classes should expose the same
+forward signature:
+
+```python
+model(input_ids, cache, position_offset) -> logits
+```
+
+`Engine.from_model_path()` should dispatch on `config.model_type` after loading
+`config.json`:
+
+- `model_type == "llama"`: construct `LlamaModel` and use the Llama converter.
+- `model_type == "qwen3"`: construct `Qwen3Model` and use the Qwen3 converter.
+
+This keeps the completed Llama path easy to read and gives learners a direct
+side-by-side comparison of the one architectural difference: Qwen3 attention
+adds Q/K norm before RoPE.
+
+---
+
 ## Weight Conversion
 
-The project may either:
-
-- add a separate `weights/qwen3_converter.py`, or
-- generalize the existing converter behind a model-family dispatch function.
-
-The preferred design is explicit dispatch:
+Add a separate `weights/qwen3_converter.py` and keep model-family dispatch
+explicit:
 
 ```python
 convert_weights(hf_weights, config)
@@ -416,6 +441,11 @@ down_proj.weight                       (D, I)
 model.norm.weight                      (D,)
 lm_head.weight                         (V, D)
 ```
+
+`q_norm.weight` has shape `(Dh,)` and is applied identically to every query
+head. `k_norm.weight` has shape `(Dh,)` and is applied identically to every key
+head. There are not separate `(H, Dh)` or `(Hkv, Dh)` norm weights; this matches
+the HuggingFace checkpoint layout.
 
 Although the Qwen3-0.6B config advertises `tie_word_embeddings: true`, the
 official HuggingFace checkpoint includes `lm_head.weight`. Phase 1.5 should
@@ -506,6 +536,11 @@ TINY_QWEN3_CONFIG = {
     "rms_norm_eps": 1e-6,
 }
 ```
+
+In this tiny fixture, `q_proj` and `o_proj` exercise the `H * Dh != D` path.
+`k_proj` and `v_proj` coincidentally have width `Hkv * Dh = 32`, equal to `D`.
+That is acceptable for unit tests because the main Qwen3-only shape risk is the
+query/merged attention width.
 
 Required tests:
 
