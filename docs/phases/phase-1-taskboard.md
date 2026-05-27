@@ -70,3 +70,9 @@ Minimum Phase 1 completion requires `P1-T00` through `P1-T16` plus `P1-T18`.
 
 `P1-T17` is an M1.8 extension. It is useful, but not required for minimum Phase
 1 completion unless the phase spec is updated later.
+
+## Next Phase
+
+Phase 1.5 adds Qwen3-0.6B support on the existing MLX backend. Use
+`docs/phases/phase-1.5-qwen3-mlx.md` as the implementation contract and
+`docs/phases/phase-1.5-taskboard.md` for task status.

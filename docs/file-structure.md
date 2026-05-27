@@ -7,7 +7,7 @@
 | File | Purpose |
 |---|---|
 | `pyproject.toml` | Runtime deps: `mlx`, `tokenizers`, `safetensors`, `huggingface-hub`. Dev: `pytest`, `transformers` |
-| `README.md` | Project overview, target model, three-phase roadmap |
+| `README.md` | Project overview, supported models, roadmap |
 | `AGENTS.md` | Entry point for AI agents — doc reading order |
 
 ---
@@ -100,6 +100,8 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `phases/phase-1-mlx-single-user.md` | Phase 1 implementation contract: scope, interfaces, shape conventions |
 | `phases/phase-1-taskboard.md` | Task tracking: 19 tasks, ownership, status, review gates |
 | `phases/phase-1-handoff.md` | Completion handoff: verification results, smoke tests, known gaps |
+| `phases/phase-1.5-qwen3-mlx.md` | Phase 1.5 implementation contract: Qwen3-0.6B support on MLX |
+| `phases/phase-1.5-taskboard.md` | Phase 1.5 task tracking, ownership, status, review gates |
 
 ---
 

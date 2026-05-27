@@ -28,15 +28,19 @@ prefer readable, teachable code over compact or highly optimized code.
 
 ## Roadmap
 
-The project follows three phases:
+The project follows three major phases, with Phase 1.5 inserted after Phase 1
+to add a second model family before backend portability:
 
 1. Phase 1: single-user local inference on Apple Silicon using MLX.
-2. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
-3. Phase 3: add multi-user serving concepts such as queues, scheduling,
+2. Phase 1.5: add `Qwen/Qwen3-0.6B` support on the same MLX backend.
+3. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
+4. Phase 3: add multi-user serving concepts such as queues, scheduling,
    batching, streaming, and PagedAttention-style KV-cache management.
 
-CUDA support is useful for industry alignment. Multi-user serving is useful for
-learning the concepts that make vLLM-like systems interesting.
+Qwen3 support is useful for learning model-family portability before adding a
+second backend. CUDA support is useful for industry alignment. Multi-user
+serving is useful for learning the concepts that make vLLM-like systems
+interesting.
 
 ## Settled Phase-1 Decisions
 
@@ -80,6 +84,12 @@ The instruct model, `meta-llama/Llama-3.2-1B-Instruct`, is not a phase-1
 requirement. It uses the same broad model family, but it expects chat-formatted
 input with role markers and special end-of-turn behavior. That is useful for a
 chatbot, but it is not required for learning the engine core.
+
+Phase 1.5 adds `Qwen/Qwen3-0.6B` as the second supported model family. The
+source-of-truth contract is `docs/phases/phase-1.5-qwen3-mlx.md`. This phase
+keeps MLX, single-request execution, and plain prompt-to-completion generation,
+but introduces model-family differences such as explicit `head_dim`, Q/K
+normalization before RoPE, Qwen3 weight conversion, and model-type dispatch.
 
 Tokenizer plan:
 
@@ -449,16 +459,16 @@ Important docs:
 - `docs/agent-guidelines.md`: multi-agent collaboration contract
 - `docs/architecture.md`: future merged architecture source of truth
 - `docs/phases/phase-1-mlx-single-user.md`: phase-1 implementation contract
+- `docs/phases/phase-1.5-qwen3-mlx.md`: phase-1.5 Qwen3 implementation contract
+- `docs/phases/phase-1.5-taskboard.md`: phase-1.5 task tracking and review state
 - `docs/adr/*.md`: durable decisions
 
 Recommended next documentation steps before implementation:
 
-1. Create ADRs for durable decisions.
-2. Create `docs/phases/phase-1-mlx-single-user.md`.
-3. Create `docs/architecture.md` by merging the useful parts of the Codex and
-   Claude Code proposals.
-4. Update `docs/agent-guidelines.md` so the unified architecture and phase specs
-   are the primary source of truth.
+1. Create ADRs for durable decisions when a phase changes architecture.
+2. Keep the active phase spec and taskboard current before implementation.
+3. Update `docs/architecture.md` and `docs/agent-guidelines.md` when the phase
+   roadmap or source-of-truth documents change.
 
 ## Learning Standards
 
@@ -490,10 +500,13 @@ Unless changed by a future ADR, these decisions are settled:
 - `uv` for environment management
 - Python `>=3.12,<3.13`
 - base `meta-llama/Llama-3.2-1B` for phase 1
+- `Qwen/Qwen3-0.6B` as the Phase 1.5 model-portability target
 - no instruct/chat support in phase 1
+- no full chat-template support in phase 1.5
 - `tokenizers` runtime dependency for tokenization
 - `transformers` only as optional dev/test reference
 - MLX first
+- Qwen3 model-family support before backend expansion
 - PyTorch/CUDA second
 - multi-user serving third
 - learning clarity over raw performance

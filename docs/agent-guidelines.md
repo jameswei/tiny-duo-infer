@@ -13,8 +13,9 @@ Agents should read the relevant planning documents before changing code.
 
 Use this source-of-truth order:
 
-1. Active phase spec, currently `docs/phases/phase-1-mlx-single-user.md`:
-   implementation contract, milestone scope, and completion criteria.
+1. Active phase spec:
+   - Phase 1 completed under `docs/phases/phase-1-mlx-single-user.md`.
+   - Phase 1.5 Qwen3 work uses `docs/phases/phase-1.5-qwen3-mlx.md`.
 2. `docs/architecture.md`: active architecture reference and subsystem
    boundaries.
 3. `docs/refined-plan.md`: settled project direction, roadmap, and
@@ -293,7 +294,7 @@ Agents should avoid:
 Agents should run the narrowest useful test set during development and broader
 tests before handoff.
 
-Expected phase-1 test categories:
+Expected Phase 1 / Phase 1.5 test categories:
 
 - unit tests for config parsing, sampling, cache behavior, and engine state
 - shape tests for attention and KV-cache updates
@@ -303,7 +304,11 @@ Phase 1 minimum completion is M1.0 through M1.7 in
 `docs/phases/phase-1-mlx-single-user.md`. M1.8 probabilistic sampling is a
 Phase 1 extension unless a later phase spec or ADR makes it mandatory.
 
-Phase 1 smoke tests should verify mechanical behavior only:
+Phase 1.5 Qwen3 work is tracked in
+`docs/phases/phase-1.5-taskboard.md` and governed by
+`docs/phases/phase-1.5-qwen3-mlx.md`.
+
+Phase 1 and Phase 1.5 smoke tests should verify mechanical behavior only:
 
 - local model artifacts load when available
 - generation completes without crashing
@@ -351,12 +356,15 @@ Unless a later ADR changes these defaults, agents should assume:
 - Python-only implementation
 - learning clarity over raw performance
 - MLX backend first
+- Qwen3 model-family support in Phase 1.5 before PyTorch/CUDA backend work
 - PyTorch/CUDA backend second
 - multi-user serving third
 - single-request execution in phase 1
 - Hugging Face-compatible local model artifacts
 - `meta-llama/Llama-3.2-1B` as the primary phase-1 model target
+- `Qwen/Qwen3-0.6B` as the Phase 1.5 model-portability target
 - base model only in phase 1; no instruct/chat-template support
+- no full chat-template support in Phase 1.5
 - `tokenizers` as the phase-1 runtime tokenizer dependency
 - `transformers` only as an optional dev/test reference
 - TinyLlama only as an optional fallback or debug target, not a phase-1

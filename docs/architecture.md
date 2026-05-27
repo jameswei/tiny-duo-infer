@@ -7,7 +7,7 @@
 
 This document is the unified architecture reference for `tiny-duo-infer`. It
 describes the system's conceptual structure, subsystem responsibilities, and
-design decisions that apply across all three phases. For phase-specific scope,
+design decisions that apply across all phases. For phase-specific scope,
 milestones, and done criteria, see `docs/phases/`.
 
 ---
@@ -158,6 +158,8 @@ docs/
   agent-guidelines.md
   phases/
     phase-1-mlx-single-user.md
+    phase-1.5-qwen3-mlx.md
+    phase-1.5-taskboard.md
   adr/
 ```
 
@@ -294,9 +296,13 @@ Benefits over Phase 1 design:
 
 ---
 
-## Target Model: Llama-3.2-1B
+## Supported Models
 
-All three phases use `meta-llama/Llama-3.2-1B` (base model).
+Phase 1 targets `meta-llama/Llama-3.2-1B` (base model). Phase 1.5 adds
+`Qwen/Qwen3-0.6B` on the same MLX backend to exercise model-family
+portability before Phase 2 introduces backend portability.
+
+### Llama-3.2-1B
 
 | Parameter | Value |
 |---|---|
@@ -317,6 +323,31 @@ All three phases use `meta-llama/Llama-3.2-1B` (base model).
 blocks (RMSNorm, RoPE, GQA, SwiGLU), and uses tiktoken BPE (loaded via the
 `tokenizers` package). Weights are roughly ~2GB in bfloat16; runtime memory
 is higher once the KV cache, activations, and MLX overhead are included.
+
+### Qwen3-0.6B
+
+Qwen3-0.6B is the Phase 1.5 model-portability target. The authoritative
+implementation contract is `docs/phases/phase-1.5-qwen3-mlx.md`.
+
+| Parameter | Value |
+|---|---|
+| `d_model` | 1024 |
+| `n_layers` | 28 |
+| `n_heads` | 16 |
+| `n_kv_heads` | 8 (GQA groups = 2) |
+| `head_dim` | 128 (explicit config field) |
+| `attention width` | 2048 (`n_heads * head_dim`) |
+| `intermediate_size` | 3072 |
+| `vocab_size` | 151936 |
+| `max_seq_len` | 40960 |
+| `rope_theta` | 1000000.0 |
+| `rms_norm_eps` | 1e-6 |
+| Weight dtype | bfloat16 |
+| Q/K norm | yes, applied after Q/K reshape and before RoPE |
+
+Qwen3 is intentionally not a config-only swap. It requires explicit
+`head_dim`, attention shapes where `n_heads * head_dim != d_model`, Q/K
+normalization before RoPE, Qwen3 weight conversion, and model-family dispatch.
 
 ---
 
@@ -343,15 +374,15 @@ vocab_size: int
 
 ## Phase Responsibilities Summary
 
-| Concern | Phase 1 | Phase 2 | Phase 3 |
-|---|---|---|---|
-| Backend | MLX (direct) | + PyTorch/CUDA via protocol | same |
-| Concurrency | single request | single request | multiple concurrent |
-| KV cache | pre-allocated static | same | PagedAttention |
-| Scheduling | none | none | FIFO → continuous batching |
-| Serving | CLI only | CLI + benchmarks | + HTTP API (FastAPI) |
-| Sampling | greedy → top-k/p/temp | same | same |
-| Model | Llama-3.2-1B (base) | same | same |
+| Concern | Phase 1 | Phase 1.5 | Phase 2 | Phase 3 |
+|---|---|---|---|---|
+| Backend | MLX (direct) | MLX (direct) | + PyTorch/CUDA via protocol | same |
+| Concurrency | single request | single request | single request | multiple concurrent |
+| KV cache | pre-allocated static | same | same | PagedAttention |
+| Scheduling | none | none | none | FIFO → continuous batching |
+| Serving | CLI only | CLI + benchmarks | CLI + benchmarks | + HTTP API (FastAPI) |
+| Sampling | greedy → top-k/p/temp | same | same | same |
+| Model | Llama-3.2-1B (base) | + Qwen3-0.6B | same supported models | same supported models |
 
 ---
 
@@ -360,11 +391,11 @@ vocab_size: int
 These are explicit non-goals for the current roadmap. Raising them as
 implementation proposals requires an ADR.
 
-- C++ or custom CUDA kernels — all three phases
-- Instruct/chat-template support — dropped by design; the base model is
-  sufficient for learning inference engine mechanics, and the instruct variant
-  adds chatbot complexity that is not relevant to this project's goals
-- Training or fine-tuning — all three phases
+- C++ or custom CUDA kernels — all phases
+- Full instruct/chat-template support — dropped from Phase 1 and deferred from
+  Phase 1.5; base prompt-to-completion is sufficient for learning inference
+  mechanics, and chat formatting is not part of the tensor execution path
+- Training or fine-tuning — all phases
 - Quantization (INT8/INT4 weights)
 - Speculative decoding
 - Distributed inference (tensor parallelism, pipeline parallelism)
