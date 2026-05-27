@@ -15,7 +15,7 @@ PyTorch/CUDA backend.
 | Phase | Focus | Status |
 |---|---|---|
 | Phase 1 | Single-user inference on Apple Silicon using MLX | Done |
-| Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | In progress |
+| Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
 | Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Not started |
 | Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
 
