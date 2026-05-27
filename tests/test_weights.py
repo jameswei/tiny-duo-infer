@@ -255,10 +255,12 @@ def test_convert_warns_and_ignores_unexpected_hf_key() -> None:
 def tiny_model_config() -> ModelConfig:
     """Return a tiny Llama-compatible config for converter unit tests."""
     return ModelConfig(
+        model_type="llama",
         d_model=8,
         n_layers=2,
         n_heads=4,
         n_kv_heads=2,
+        head_dim=2,
         intermediate_size=16,
         vocab_size=32,
         max_seq_len=16,

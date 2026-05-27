@@ -33,7 +33,7 @@ That spec is the source of truth for Qwen3-0.6B support.
 | ID | Milestone | Task | Depends On | Status | Owner | Acceptance | Notes |
 |---|---|---|---|---|---|---|---|
 | P1.5-T00 | Planning | Phase 1.5 source-of-truth docs | Phase 1 complete | done | codex | spec and taskboard exist; `AGENTS.md`, `docs/refined-plan.md`, `docs/architecture.md`, `docs/agent-guidelines.md`, and `docs/file-structure.md` reference Phase 1.5 | reviewed by cc; spec reviewed across three rounds — all findings resolved; taskboard structure and dependencies verified; all referenced docs confirmed present |
-| P1.5-T01 | Config | Config generalization | P1.5-T00 | todo | unassigned | Llama and Qwen3 configs parse; explicit `head_dim`; derived `qk_norm` | update `TINY_CONFIG` and direct `ModelConfig(...)` tests |
+| P1.5-T01 | Config | Config generalization | P1.5-T00 | done | codex | Llama and Qwen3 configs parse; explicit `head_dim`; derived `qk_norm` | reviewed by cc; all acceptance criteria met — explicit head_dim stored, qk_norm derived from model_type, A≠D Qwen3 path validated, Llama invariant scoped correctly, all direct ModelConfig(...) callers updated; 177 passed, 7 skipped |
 | P1.5-T02 | Model | Qwen3 attention support | P1.5-T01 | todo | unassigned | Qwen3 Q/K norm before RoPE; `H * Dh != D` tests pass | prefer explicit `Qwen3Attention` |
 | P1.5-T03 | Weights | Qwen3 weight conversion | P1.5-T01 | todo | unassigned | Qwen3 HF keys map and validate; absent `lm_head.weight` errors | require q/k norm weights |
 | P1.5-T04 | Engine | Model assembly and dispatch | P1.5-T02, P1.5-T03 | todo | unassigned | engine loads Llama or Qwen3 by `model_type`; tiny Qwen3 prefill/decode passes | preserve Phase 1 Llama behavior |

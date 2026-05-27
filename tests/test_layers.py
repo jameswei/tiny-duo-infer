@@ -309,10 +309,12 @@ def test_attention_forward_decode_shape_and_cache_append(tiny_model_config):
 def test_attention_gqa_repeats_kv_heads_on_head_axis():
     """With T=1, each Q head receives the V head repeated on axis=1."""
     cfg = ModelConfig(
+        model_type="llama",
         d_model=8,
         n_layers=1,
         n_heads=4,
         n_kv_heads=2,
+        head_dim=2,
         intermediate_size=16,
         vocab_size=16,
         max_seq_len=8,
@@ -475,8 +477,8 @@ def test_swiglu_forward_manual_formula():
     import math
     from tiny_duo_infer.config import ModelConfig
     cfg = ModelConfig(
-        d_model=2, n_layers=1, n_heads=1, n_kv_heads=1,
-        intermediate_size=2, vocab_size=4, max_seq_len=8,
+        model_type="llama", d_model=2, n_layers=1, n_heads=1, n_kv_heads=1,
+        head_dim=2, intermediate_size=2, vocab_size=4, max_seq_len=8,
         rope_theta=10000.0, rms_norm_eps=1e-5,
     )
     ffn = SwiGLUFFN(cfg)
