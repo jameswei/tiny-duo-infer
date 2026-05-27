@@ -115,6 +115,7 @@ tiny_duo_infer/
     __init__.py
     base.py           — Module ABC, Linear, Embedding
     llama.py          — LlamaBlock, LlamaModel assembly
+    qwen3.py          — Qwen3Block, Qwen3Model assembly
 
   layers/
     __init__.py
@@ -127,6 +128,7 @@ tiny_duo_infer/
     __init__.py
     loader.py         — safetensors shard loading → mx.array / torch.Tensor
     llama_converter.py — HF key mapping, shape validation, tied-embedding
+    qwen3_converter.py — Qwen3 HF key mapping and shape validation
 
   tokenizer/
     __init__.py
@@ -175,9 +177,11 @@ docs/
 | `backends/protocol.py` | `Backend` typing Protocol; defines Tier-1 op signatures |
 | `models/base.py` | `Module` ABC with `load_weights(flat_dict)`; `Linear`, `Embedding` |
 | `models/llama.py` | `LlamaBlock`, `LlamaModel`; assembles layers into the full model |
+| `models/qwen3.py` | `Qwen3Block`, `Qwen3Model`; Qwen3 assembly with Q/K-normalized attention |
 | `layers/attention.py` | `LlamaAttention`; contains all GQA and RoPE logic |
 | `layers/rope.py` | `precompute_freqs()`, `apply_rope()`; called at model init and each forward |
 | `weights/llama_converter.py` | HF key → project key mapping; tied embedding handling; shape assertions |
+| `weights/qwen3_converter.py` | Qwen3 HF key → project key mapping; Q/K norm and projection shape assertions |
 | `tokenizer/loader.py` | `Tokenizer.from_pretrained()`; wraps `tokenizers` package |
 
 ---

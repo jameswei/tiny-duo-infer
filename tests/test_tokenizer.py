@@ -71,6 +71,22 @@ def _make_hf_tokenizer() -> HFTokenizer:
     return tok
 
 
+def _make_hf_tokenizer_without_post_processor() -> HFTokenizer:
+    """
+    Build a tokenizer with special tokens but no automatic BOS post-processor.
+
+    Qwen3-0.6B advertises add_bos_token=false, so plain prompt-to-completion
+    encoding should not assume add_special_tokens=True prepends BOS.
+    """
+    tok = HFTokenizer(WordLevel(vocab=CONTENT_VOCAB, unk_token="hello"))
+    tok.pre_tokenizer = Whitespace()
+    tok.add_special_tokens([
+        AddedToken("[BOS]", special=True),
+        AddedToken("[EOS]", special=True),
+    ])
+    return tok
+
+
 @pytest.fixture
 def tok_path_int_config(tmp_path):
     """
@@ -110,6 +126,30 @@ def tok_path_dict_config(tmp_path):
     return tmp_path
 
 
+@pytest.fixture
+def tok_path_qwen3_style_config(tmp_path):
+    """
+    Synthetic Qwen3-style metadata.
+
+    tokenizer_config.json has bos_token=null and eos_token as a string;
+    config.json carries bos_token_id/eos_token_id. There is no tokenizer
+    post-processor that prepends BOS.
+    """
+    _make_hf_tokenizer_without_post_processor().save(str(tmp_path / "tokenizer.json"))
+    tokenizer_config = {
+        "add_bos_token": False,
+        "bos_token": None,
+        "eos_token": "[EOS]",
+    }
+    model_config = {
+        "bos_token_id": BOS_ID,
+        "eos_token_id": EOS_ID,
+    }
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
+    (tmp_path / "config.json").write_text(json.dumps(model_config))
+    return tmp_path
+
+
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
@@ -126,6 +166,11 @@ def test_from_pretrained_str_config(tok_path_str_config):
 
 def test_from_pretrained_dict_config(tok_path_dict_config):
     tok = Tokenizer.from_pretrained(tok_path_dict_config)
+    assert isinstance(tok, Tokenizer)
+
+
+def test_from_pretrained_qwen3_style_config(tok_path_qwen3_style_config):
+    tok = Tokenizer.from_pretrained(tok_path_qwen3_style_config)
     assert isinstance(tok, Tokenizer)
 
 
@@ -179,6 +224,18 @@ def test_out_of_range_eos_token_id_raises(tmp_path):
         Tokenizer.from_pretrained(tmp_path)
 
 
+def test_invalid_config_json_token_id_raises(tmp_path):
+    """Fallback IDs from config.json are validated the same way as tokenizer_config IDs."""
+    _make_hf_tokenizer_without_post_processor().save(str(tmp_path / "tokenizer.json"))
+    tokenizer_config = {"bos_token": None, "eos_token": "[EOS]"}
+    model_config = {"bos_token_id": True}
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(tokenizer_config))
+    (tmp_path / "config.json").write_text(json.dumps(model_config))
+
+    with pytest.raises(ValueError, match="bool"):
+        Tokenizer.from_pretrained(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # BOS / EOS token IDs
 # ---------------------------------------------------------------------------
@@ -201,6 +258,13 @@ def test_bos_eos_str_config(tok_path_str_config):
 
 def test_bos_eos_dict_config(tok_path_dict_config):
     tok = Tokenizer.from_pretrained(tok_path_dict_config)
+    assert tok.bos_token_id == BOS_ID
+    assert tok.eos_token_id == EOS_ID
+
+
+def test_bos_from_config_json_and_eos_from_tokenizer_config(tok_path_qwen3_style_config):
+    """Qwen3-style metadata resolves BOS and EOS from different files."""
+    tok = Tokenizer.from_pretrained(tok_path_qwen3_style_config)
     assert tok.bos_token_id == BOS_ID
     assert tok.eos_token_id == EOS_ID
 
@@ -254,6 +318,13 @@ def test_encode_add_special_tokens_false_no_bos(tok_path_int_config):
     tok = Tokenizer.from_pretrained(tok_path_int_config)
     ids = tok.encode("hello world", add_special_tokens=False)
     assert BOS_ID not in ids
+
+
+def test_qwen3_style_encode_does_not_prepend_bos(tok_path_qwen3_style_config):
+    """add_special_tokens=True follows tokenizer.json; Qwen3 plain prompts add no BOS."""
+    tok = Tokenizer.from_pretrained(tok_path_qwen3_style_config)
+    ids = tok.encode("hello", add_special_tokens=True)
+    assert ids == [CONTENT_VOCAB["hello"]]
 
 
 # ---------------------------------------------------------------------------
@@ -331,3 +402,26 @@ def test_tokenizer_eos_in_decode():
     tok = Tokenizer.from_pretrained(model_path)
     text = tok.decode([tok.eos_token_id], skip_special_tokens=False)
     assert isinstance(text, str)
+
+
+@pytest.mark.slow
+def test_qwen3_tokenizer_smoke():
+    """Load real Qwen3-0.6B tokenizer metadata and verify plain prompt mode."""
+    import os
+    model_path = os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b")
+    tok = Tokenizer.from_pretrained(model_path)
+
+    assert isinstance(tok.bos_token_id, int)
+    assert isinstance(tok.eos_token_id, int)
+    assert tok.vocab_size >= 151646
+
+    prompt = "The capital of France is"
+    ids = tok.encode(prompt, add_special_tokens=True)
+    ids_no_specials = tok.encode(prompt, add_special_tokens=False)
+
+    # Qwen3-0.6B uses add_bos_token=false; tokenizers follows tokenizer.json
+    # and does not synthesize a BOS token for plain prompt-to-completion mode.
+    assert ids == ids_no_specials
+
+    decoded = tok.decode(ids, skip_special_tokens=True)
+    assert "France" in decoded

@@ -30,6 +30,7 @@
 |---|---|
 | `base.py` | `Module` ABC, `Linear`, `Embedding`: `load_weights()` dot-path routing |
 | `llama.py` | `LlamaBlock`: pre-norm attention + FFN + residuals. `LlamaModel`: embed → 16 blocks → final_norm → lm_head |
+| `qwen3.py` | `Qwen3Block` / `Qwen3Model`: Qwen3 assembly using Q/K-normalized attention |
 
 ### `layers/`
 
@@ -46,6 +47,7 @@
 |---|---|
 | `loader.py` | `load_weights()`: safetensors shard discovery → `mx.array` dict |
 | `llama_converter.py` | `convert()`: HF key mapping, shape validation, tied embeddings |
+| `qwen3_converter.py` | `convert()`: Qwen3 HF key mapping, Q/K norm weights, `H * Dh != D` shape validation |
 
 ### `tokenizer/`
 

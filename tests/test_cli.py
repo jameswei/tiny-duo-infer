@@ -121,6 +121,35 @@ def test_main_passes_generation_arguments_to_engine():
     assert engine.generate_calls == [("The prompt", 7, 0.5, 4, 0.9)]
 
 
+def test_main_accepts_qwen3_model_path_and_sampling_flags():
+    """Qwen3 uses the same CLI surface; model family is inferred by Engine."""
+    stdout = StringIO()
+
+    main(
+        [
+            "--model-path",
+            "models/qwen3-0.6b",
+            "--prompt",
+            "The capital of France is",
+            "--max-new-tokens",
+            "8",
+            "--temperature",
+            "0.7",
+            "--top-p",
+            "0.8",
+        ],
+        engine_cls=_FakeEngine,
+        stdout=stdout,
+    )
+
+    assert _FakeEngine.from_model_path_calls == [(Path("models/qwen3-0.6b"), 2048)]
+    engine = _FakeEngine.instances[0]
+    assert engine.generate_calls == [
+        ("The capital of France is", 8, 0.7, 0, 0.8)
+    ]
+    assert stdout.getvalue() == "hello world"
+
+
 def test_main_uses_documented_defaults():
     """CLI defaults match the Phase-1 Engine API defaults."""
     stdout = StringIO()
@@ -173,3 +202,29 @@ def test_main_rejects_zero_max_seq_len():
             engine_cls=_FakeEngine,
             stdout=StringIO(),
         )
+
+
+@pytest.mark.slow
+def test_qwen3_cli_smoke():
+    """Run the real CLI path against local Qwen3 artifacts when available."""
+    import os
+
+    stdout = StringIO()
+    model_path = os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b")
+
+    exit_code = main(
+        [
+            "--model-path",
+            model_path,
+            "--prompt",
+            "The capital of France is",
+            "--max-new-tokens",
+            "2",
+            "--temperature",
+            "0.0",
+        ],
+        stdout=stdout,
+    )
+
+    assert exit_code == 0
+    assert isinstance(stdout.getvalue(), str)
