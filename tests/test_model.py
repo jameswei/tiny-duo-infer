@@ -30,8 +30,10 @@ import mlx.core as mx
 import pytest
 
 from tiny_duo_infer.cache import KVCache
+from tiny_duo_infer.layers.attention import Qwen3Attention
 from tiny_duo_infer.models.base import Embedding, Linear, Module
 from tiny_duo_infer.models.llama import LlamaBlock, LlamaModel
+from tiny_duo_infer.models.qwen3 import Qwen3Block, Qwen3Model
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +388,136 @@ def test_llama_model_load_weights_routes_all_keys(tiny_model_config):
         assert model.layers[i].attn.q_proj.weight    is weights[f"layers.{i}.attn.q_proj.weight"]
         assert model.layers[i].ffn.gate_proj.weight  is weights[f"layers.{i}.ffn.gate_proj.weight"]
         assert model.layers[i].ffn.down_proj.weight  is weights[f"layers.{i}.ffn.down_proj.weight"]
+
+
+# ---------------------------------------------------------------------------
+# Qwen3Model assembly
+# ---------------------------------------------------------------------------
+
+def _random_qwen3_weights(config) -> dict:
+    """Build a complete flat Qwen3 weight dict with random values."""
+    D, V, I = config.d_model, config.vocab_size, config.intermediate_size
+    H, Hkv, Dh = config.n_heads, config.n_kv_heads, config.head_dim
+    A = H * Dh
+    weights = {
+        "embed_tokens.weight": mx.random.normal((V, D)),
+        "final_norm.weight": mx.random.normal((D,)),
+        "lm_head.weight": mx.random.normal((V, D)),
+    }
+    for i in range(config.n_layers):
+        weights.update({
+            f"layers.{i}.input_norm.weight": mx.random.normal((D,)),
+            f"layers.{i}.attn.q_proj.weight": mx.random.normal((A, D)),
+            f"layers.{i}.attn.k_proj.weight": mx.random.normal((Hkv * Dh, D)),
+            f"layers.{i}.attn.v_proj.weight": mx.random.normal((Hkv * Dh, D)),
+            f"layers.{i}.attn.o_proj.weight": mx.random.normal((D, A)),
+            f"layers.{i}.attn.q_norm.weight": mx.random.normal((Dh,)),
+            f"layers.{i}.attn.k_norm.weight": mx.random.normal((Dh,)),
+            f"layers.{i}.post_attn_norm.weight": mx.random.normal((D,)),
+            f"layers.{i}.ffn.gate_proj.weight": mx.random.normal((I, D)),
+            f"layers.{i}.ffn.up_proj.weight": mx.random.normal((I, D)),
+            f"layers.{i}.ffn.down_proj.weight": mx.random.normal((D, I)),
+        })
+    return weights
+
+
+def _make_qwen3_model(config) -> Qwen3Model:
+    model = Qwen3Model(config)
+    model.load_weights(_random_qwen3_weights(config))
+    return model
+
+
+def test_qwen3_block_uses_qwen3_attention(tiny_qwen3_model_config):
+    """Qwen3Block instantiates Qwen3Attention, keeping model-family logic explicit."""
+    from tiny_duo_infer.layers.rope import precompute_freqs
+
+    cos_sin = precompute_freqs(
+        tiny_qwen3_model_config.head_dim,
+        tiny_qwen3_model_config.max_seq_len,
+        tiny_qwen3_model_config.rope_theta,
+    )
+    block = Qwen3Block(tiny_qwen3_model_config, layer_idx=0, cos_sin=cos_sin)
+
+    assert isinstance(block.attn, Qwen3Attention)
+    assert block.attn.q_proj.out_features == (
+        tiny_qwen3_model_config.n_heads * tiny_qwen3_model_config.head_dim
+    )
+
+
+def test_qwen3_model_prefill_logits_shape(tiny_qwen3_model_config):
+    """Qwen3Model prefill returns logits (B, S, V) with A = H * Dh != D."""
+    S = 5
+    model = _make_qwen3_model(tiny_qwen3_model_config)
+    cache = _make_cache(tiny_qwen3_model_config)
+    input_ids = mx.array([[0, 1, 2, 3, 4]])  # (1, S)
+
+    logits = model(input_ids, cache, position_offset=0)
+    mx.eval(logits)
+
+    assert tiny_qwen3_model_config.n_heads * tiny_qwen3_model_config.head_dim != (
+        tiny_qwen3_model_config.d_model
+    )
+    assert logits.shape == (1, S, tiny_qwen3_model_config.vocab_size)
+
+
+def test_qwen3_model_decode_logits_shape(tiny_qwen3_model_config):
+    """Qwen3Model decode step returns (B, 1, V) after prefill."""
+    model = _make_qwen3_model(tiny_qwen3_model_config)
+    cache = _make_cache(tiny_qwen3_model_config)
+
+    prompt = mx.array([[0, 1, 2]])
+    model(prompt, cache, position_offset=0)
+    cache.advance(3)
+
+    token = mx.array([[4]])
+    logits = model(token, cache, position_offset=cache.current_len)
+    mx.eval(logits)
+
+    assert logits.shape == (1, 1, tiny_qwen3_model_config.vocab_size)
+
+
+def test_qwen3_model_cache_current_len_unchanged_by_forward(tiny_qwen3_model_config):
+    """Qwen3Model leaves cache.advance() responsibility with the engine."""
+    model = _make_qwen3_model(tiny_qwen3_model_config)
+    cache = _make_cache(tiny_qwen3_model_config)
+
+    model(mx.array([[0, 1, 2]]), cache, position_offset=0)
+    mx.eval(cache._keys[0])
+
+    assert cache.current_len == 0
+
+
+def test_qwen3_model_load_weights_routes_all_keys(tiny_qwen3_model_config):
+    """load_weights() populates Qwen3 layer weights, including q_norm/k_norm."""
+    model = Qwen3Model(tiny_qwen3_model_config)
+    weights = _random_qwen3_weights(tiny_qwen3_model_config)
+    model.load_weights(weights)
+
+    assert model.embed_tokens.weight is weights["embed_tokens.weight"]
+    assert model.final_norm.weight is weights["final_norm.weight"]
+    assert model.lm_head.weight is weights["lm_head.weight"]
+
+    for i in range(tiny_qwen3_model_config.n_layers):
+        assert (
+            model.layers[i].input_norm.weight
+            is weights[f"layers.{i}.input_norm.weight"]
+        )
+        assert (
+            model.layers[i].attn.q_proj.weight
+            is weights[f"layers.{i}.attn.q_proj.weight"]
+        )
+        assert (
+            model.layers[i].attn.q_norm.weight
+            is weights[f"layers.{i}.attn.q_norm.weight"]
+        )
+        assert (
+            model.layers[i].attn.k_norm.weight
+            is weights[f"layers.{i}.attn.k_norm.weight"]
+        )
+        assert (
+            model.layers[i].ffn.down_proj.weight
+            is weights[f"layers.{i}.ffn.down_proj.weight"]
+        )
 
 
 @pytest.mark.slow

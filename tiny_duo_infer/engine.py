@@ -10,11 +10,12 @@ It orchestrates the full pipeline:
   5. Stop: on EOS or when max_new_tokens is reached
   6. Yield: decoded text fragments to the caller
 
-Phase 1 supports one active request at a time.
+Phase 1/1.5 supports one active request at a time.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterator
@@ -23,11 +24,14 @@ import mlx.core as mx
 
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
+from tiny_duo_infer.models.base import Module
 from tiny_duo_infer.models.llama import LlamaModel
+from tiny_duo_infer.models.qwen3 import Qwen3Model
 from tiny_duo_infer.sampling import sample
 from tiny_duo_infer.tokenizer.loader import Tokenizer
-from tiny_duo_infer.weights.llama_converter import convert
+from tiny_duo_infer.weights.llama_converter import convert as convert_llama
 from tiny_duo_infer.weights.loader import load_weights
+from tiny_duo_infer.weights.qwen3_converter import convert as convert_qwen3
 
 
 class Engine:
@@ -35,7 +39,7 @@ class Engine:
     Top-level inference engine for single-user local generation.
 
     Owns the model, tokenizer, and generation loop. All state required
-    for one generation request lives here. Phase 1 supports one active
+    for one generation request lives here. Phase 1/1.5 supports one active
     request at a time.
 
     Usage:
@@ -46,7 +50,7 @@ class Engine:
 
     def __init__(
         self,
-        model: LlamaModel,
+        model: Module,
         tokenizer: Tokenizer,
         config: ModelConfig,
         max_seq_len: int,
@@ -55,7 +59,7 @@ class Engine:
         Create an engine around already-constructed model components.
 
         Args:
-            model:       loaded LlamaModel. Forward accepts input IDs shaped
+            model:       loaded model. Forward accepts input IDs shaped
                          (B, S), a KVCache, and a position offset.
             tokenizer:   project tokenizer wrapper used by text prefill and
                          later decode.
@@ -100,9 +104,10 @@ class Engine:
         runtime_config = replace(config, max_seq_len=max_seq_len)
         tokenizer = Tokenizer.from_pretrained(model_dir)
         hf_weights = load_weights(model_dir)
-        project_weights = convert(hf_weights, runtime_config)
+        model_cls, converter = _model_class_and_converter(runtime_config)
+        project_weights = converter(hf_weights, runtime_config)
 
-        model = LlamaModel(runtime_config)
+        model = model_cls(runtime_config)
         model.load_weights(project_weights)
 
         return cls(
@@ -278,3 +283,21 @@ class Engine:
             self.cache.advance(1)
 
             next_token = sample(logits[0, 0, :], temperature=temperature, top_k=top_k, top_p=top_p)
+
+
+ModelClass = type[LlamaModel] | type[Qwen3Model]
+Converter = Callable[[dict[str, mx.array], ModelConfig], dict[str, mx.array]]
+
+
+def _model_class_and_converter(config: ModelConfig) -> tuple[ModelClass, Converter]:
+    """
+    Select the model assembly and weight converter for a supported model family.
+
+    Keeping dispatch here makes Engine.from_model_path() the single boundary
+    between HuggingFace artifacts and the runtime model object.
+    """
+    if config.model_type == "llama":
+        return LlamaModel, convert_llama
+    if config.model_type == "qwen3":
+        return Qwen3Model, convert_qwen3
+    raise ValueError(f"unsupported model_type {config.model_type!r}")

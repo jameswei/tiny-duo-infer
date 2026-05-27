@@ -22,6 +22,7 @@ Test categories (slow smoke):
 import pytest
 import mlx.core as mx
 
+import tiny_duo_infer.engine as engine_module
 from tiny_duo_infer.engine import Engine
 
 
@@ -117,6 +118,120 @@ def _make_engine(tiny_model_config, max_seq_len: int | None = None) -> Engine:
         config=tiny_model_config,
         max_seq_len=max_seq_len or tiny_model_config.max_seq_len,
     )
+
+
+def _fake_model_class(family: str, records: list[tuple[str, object]]) -> type:
+    """Build a loadable model test double for Engine.from_model_path() dispatch."""
+
+    class FakeModel:
+        def __init__(self, config) -> None:
+            self.config = config
+            self.loaded_weights = None
+            records.append((f"{family}.init", config))
+
+        def load_weights(self, weights) -> None:
+            self.loaded_weights = weights
+            records.append((f"{family}.load_weights", weights))
+
+    return FakeModel
+
+
+def test_from_model_path_dispatches_llama_model_and_converter(monkeypatch, tiny_model_config):
+    """Llama configs use LlamaModel plus the Llama weight converter."""
+    records: list[tuple[str, object]] = []
+    tokenizer = _FakeTokenizer([1, 2])
+    hf_weights = {"raw": mx.array([1.0])}
+    converted_weights = {"converted": mx.array([2.0])}
+
+    def convert_llama(weights, config):
+        records.append(("llama.convert", (weights, config)))
+        return converted_weights
+
+    monkeypatch.setattr(
+        engine_module,
+        "load_config",
+        lambda model_dir: tiny_model_config,
+    )
+    monkeypatch.setattr(
+        engine_module.Tokenizer,
+        "from_pretrained",
+        staticmethod(lambda model_dir: tokenizer),
+    )
+    monkeypatch.setattr(engine_module, "load_weights", lambda model_dir: hf_weights)
+    monkeypatch.setattr(engine_module, "LlamaModel", _fake_model_class("llama", records))
+    monkeypatch.setattr(engine_module, "Qwen3Model", _fake_model_class("qwen3", records))
+    monkeypatch.setattr(engine_module, "convert_llama", convert_llama)
+
+    engine = Engine.from_model_path("/fake/llama", max_seq_len=11)
+
+    assert engine.tokenizer is tokenizer
+    assert engine.config.model_type == "llama"
+    assert engine.config.max_seq_len == 11
+    assert records[0][0] == "llama.convert"
+    assert records[0][1] == (hf_weights, engine.config)
+    assert records[1] == ("llama.init", engine.config)
+    assert records[2] == ("llama.load_weights", converted_weights)
+
+
+def test_from_model_path_dispatches_qwen3_model_and_converter(
+    monkeypatch,
+    tiny_qwen3_model_config,
+):
+    """Qwen3 configs use Qwen3Model plus the Qwen3 weight converter."""
+    records: list[tuple[str, object]] = []
+    tokenizer = _FakeTokenizer([1, 2])
+    hf_weights = {"raw": mx.array([1.0])}
+    converted_weights = {"converted": mx.array([3.0])}
+
+    def convert_qwen3(weights, config):
+        records.append(("qwen3.convert", (weights, config)))
+        return converted_weights
+
+    monkeypatch.setattr(
+        engine_module,
+        "load_config",
+        lambda model_dir: tiny_qwen3_model_config,
+    )
+    monkeypatch.setattr(
+        engine_module.Tokenizer,
+        "from_pretrained",
+        staticmethod(lambda model_dir: tokenizer),
+    )
+    monkeypatch.setattr(engine_module, "load_weights", lambda model_dir: hf_weights)
+    monkeypatch.setattr(engine_module, "LlamaModel", _fake_model_class("llama", records))
+    monkeypatch.setattr(engine_module, "Qwen3Model", _fake_model_class("qwen3", records))
+    monkeypatch.setattr(engine_module, "convert_qwen3", convert_qwen3)
+
+    engine = Engine.from_model_path("/fake/qwen3", max_seq_len=13)
+
+    assert engine.tokenizer is tokenizer
+    assert engine.config.model_type == "qwen3"
+    assert engine.config.max_seq_len == 13
+    assert records[0][0] == "qwen3.convert"
+    assert records[0][1] == (hf_weights, engine.config)
+    assert records[1] == ("qwen3.init", engine.config)
+    assert records[2] == ("qwen3.load_weights", converted_weights)
+
+
+def test_from_model_path_rejects_max_seq_len_above_config(monkeypatch, tiny_model_config):
+    """Dispatch is not attempted if requested max_seq_len exceeds model context."""
+    records: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(
+        engine_module,
+        "load_config",
+        lambda model_dir: tiny_model_config,
+    )
+    monkeypatch.setattr(
+        engine_module,
+        "load_weights",
+        lambda model_dir: records.append(("load", model_dir)),
+    )
+
+    with pytest.raises(ValueError, match="exceeds model context length"):
+        Engine.from_model_path("/fake/llama", max_seq_len=tiny_model_config.max_seq_len + 1)
+
+    assert records == []
 
 
 def test_prefill_token_ids_returns_final_position_logits(tiny_model_config):
