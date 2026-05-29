@@ -27,6 +27,25 @@ Tied embeddings:
     may omit lm_head.weight entirely or include it as a duplicate. The converter
     ensures lm_head.weight is present in the output dict by copying embed_tokens.weight
     if needed (no extra memory: same underlying array).
+
+dot-path keys will be loaded into the module tree, like this:
+    LlamaModel
+    ├── embed_tokens              → Embedding.weight          (V, D)
+    ├── layers[0..15]
+    │   ├── input_norm            → RMSNorm.weight            (D,)
+    │   ├── attn                  → LlamaAttention
+    │   │   ├── q_proj            → Linear.weight             (D, D)
+    │   │   ├── k_proj            → Linear.weight             (Hkv*Dh, D)
+    │   │   ├── v_proj            → Linear.weight             (Hkv*Dh, D)
+    │   │   └── o_proj            → Linear.weight             (D, D)
+    │   ├── post_attn_norm        → RMSNorm.weight            (D,)
+    │   └── ffn                   → SwiGLUFFN
+    │       ├── gate_proj         → Linear.weight             (I, D)
+    │       ├── up_proj           → Linear.weight             (I, D)
+    │       └── down_proj         → Linear.weight             (D, I)
+    ├── final_norm                → RMSNorm.weight            (D,)
+    └── lm_head                   → Linear.weight             (V, D)
+
 """
 
 from __future__ import annotations

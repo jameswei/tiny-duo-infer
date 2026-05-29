@@ -1,9 +1,10 @@
 """
 Base module infrastructure: Module ABC, Linear, Embedding.
 
-Provides a minimal inference-only module system. We do not subclass
-mlx.nn.Module or torch.nn.Module — this keeps model code backend-neutral
-and makes the module system itself visible and understandable.
+Provides a minimal inference-only module system. Similar with `mlx.nn.module` or
+`torch.nn.Module`, but we do not subclass them. — this keeps model code backend-neutral and
+not tied to specific frameworks for learning purpose, and also makes the module system
+visible and understandable.
 
 Weights are stored as plain backend-array attributes (mx.array in Phase 1).
 No gradient tracking, no parameter registration, no device movement API:
@@ -11,7 +12,7 @@ inference only.
 
 The load_weights() routing protocol:
   Each module receives a flat dict with dot-separated paths relative to itself.
-  Direct keys (no dot) are set as attributes on self via setattr().
+  Direct keys (no dot) are set as attributes on self via `setattr()`.
   Prefixed keys are split on the first dot and the remainder is forwarded
   recursively to the named sub-module attribute.
 
@@ -31,7 +32,7 @@ class Module:
     """
     Base class for all model modules in this engine.
 
-    Mirrors the minimal interface of mlx.nn.Module and torch.nn.Module without
+    Mirrors the minimal interface of `mlx.nn.Module` and `torch.nn.Module` without
     depending on either. Subclasses implement forward() and can override
     load_weights() for custom weight-loading logic; the default implementation
     handles the dot-path routing protocol described in this module's docstring.
@@ -49,7 +50,7 @@ class Module:
         """
         Populate weight attributes from a flat dict of backend arrays.
 
-        Keys are dot-separated paths relative to this module.
+        Keys are dot-separated paths like `a.b.c` relative to this module.
         A key with no dot is set directly as an attribute on self.
         A key with a dot is split on the first dot: the left part names a
         sub-module attribute, and the right part is forwarded recursively.
@@ -142,7 +143,7 @@ class Embedding(Module):
 
     def forward(self, token_ids: mx.array) -> mx.array:
         """
-        Look up embedding vectors for each token ID.
+        Look up embedding vectors for each token ID by fancy indexing.
 
         Args:
             token_ids: (B, S) integer token IDs.

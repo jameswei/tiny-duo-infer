@@ -3,8 +3,8 @@ Qwen3 model assembly: Qwen3Block and Qwen3Model.
 
 Qwen3 follows the same high-level decoder-only transformer structure as Llama:
 embedding -> transformer blocks -> final RMSNorm -> lm_head. The key
-architecture difference for Phase 1.5 is attention: Qwen3 uses per-head Q/K
-RMSNorm before RoPE and can have attention width A = H * Dh that differs from
+architecture difference is attention: Qwen3 uses per-head Q/K RMSNorm
+before RoPE and can have attention width A = H * Dh that differs from
 hidden size D.
 
 Architecture overview:
@@ -112,7 +112,9 @@ class Qwen3Model(Module):
 
         RoPE tables are precomputed once and shared across Qwen3Blocks.
         """
-        cos_sin = precompute_freqs(config.head_dim, config.max_seq_len, config.rope_theta)
+        cos_sin = precompute_freqs(
+            config.head_dim, config.max_seq_len, config.rope_theta
+        )
 
         self.embed_tokens = Embedding(config.vocab_size, config.d_model)
         self.layers = [Qwen3Block(config, i, cos_sin) for i in range(config.n_layers)]

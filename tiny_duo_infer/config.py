@@ -38,17 +38,22 @@ class ModelConfig:
     """
 
     model_type: str
-    # mapping to `hidden_size`
+    # mapping to `hidden_size`, `D`
     d_model: int
-    # mapping to `num_hidden_layers`
+    # mapping to `num_hidden_layers`, `L`
     n_layers: int
-    # mapping to `num_attention_heads`
+    # mapping to `num_attention_heads`, `H`
     n_heads: int
-    # mapping to `num_key_value_heads`
+    # mapping to `num_key_value_heads`, `Hkv`
     n_kv_heads: int
+    # for Llama3, this can be derived from `hidden_size/num_attention_heads`, but Qwen3 defines it explicitly.
+    # `Dh`
     head_dim: int
+    # dimension of FFN layer, `I`
     intermediate_size: int
+    # `V`
     vocab_size: int
+    # `T`
     max_seq_len: int
     rope_theta: float
     rms_norm_eps: float
