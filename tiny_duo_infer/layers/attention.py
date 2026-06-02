@@ -8,7 +8,7 @@ Two attention classes are defined here:
 Llama-3.2-1B uses Grouped Query Attention (GQA) where n_heads=32 query heads
 share n_kv_heads=8 key/value heads in groups of n_groups=4.
 
-GQA reduces KV cache memory by n_groups×: instead of storing 32 K and V heads
+GQA reduces KV cache memory by n_groups times: instead of storing 32 K and V heads
 per token per layer, only 8 are stored. At attention time, each KV head is
 repeated n_groups times to match the Q head count before the matmul.
 
@@ -103,19 +103,21 @@ class LlamaAttention(Module):
         B, S, _D = x.shape
         H, Hkv, Dh = self.n_heads, self.n_kv_heads, self.head_dim
 
-        q = self.q_proj(x).reshape(B, S, H, Dh)      # (B, S, H, Dh)
-        k = self.k_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
-        v = self.v_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
+        q = self.q_proj(x).reshape(B, S, H, Dh)  # (B, S, H, Dh)
+        k = self.k_proj(x).reshape(B, S, Hkv, Dh)  # (B, S, Hkv, Dh)
+        v = self.v_proj(x).reshape(B, S, Hkv, Dh)  # (B, S, Hkv, Dh)
 
         cos, sin = self.cos_sin
-        q = apply_rope(q, cos, sin, offset=position_offset)
-        k = apply_rope(k, cos, sin, offset=position_offset)
+        q = apply_rope(q, cos, sin, offset=position_offset)  # (B, S, H, Dh)
+        k = apply_rope(k, cos, sin, offset=position_offset)  # (B, S, Hkv, Dh)
 
         # KV cache stores transposed K/V as (B, Hkv, T, Dh). update() writes
         # this layer's new positions and returns the full valid prefix.
         new_k = mx.transpose(k, (0, 2, 1, 3))  # (B, Hkv, S, Dh)
         new_v = mx.transpose(v, (0, 2, 1, 3))  # (B, Hkv, S, Dh)
-        k_full, v_full = cache.update(layer_idx, new_k, new_v, position_offset)
+        k_full, v_full = cache.update(
+            layer_idx, new_k, new_v, position_offset
+        )  # (B, Hkv, T, Dh)
         T = k_full.shape[2]
 
         q_t = mx.transpose(q, (0, 2, 1, 3))  # (B, H, S, Dh)
@@ -123,11 +125,12 @@ class LlamaAttention(Module):
         # GQA expands each KV head along the head axis so every group of query
         # heads attends to the KV head it shares in the original Llama layout.
         k_expanded = mx.repeat(k_full, repeats=self.n_groups, axis=1)  # (B, H, T, Dh)
-        v_expanded = mx.repeat(v_full, repeats=self.n_groups, axis=1)  # (B, H, T, Dh)
 
         scores = (q_t @ mx.transpose(k_expanded, (0, 1, 3, 2))) / math.sqrt(Dh)
         scores = _apply_causal_mask(scores, position_offset)
         weights = mx.softmax(scores, axis=-1)  # (B, H, S, T)
+
+        v_expanded = mx.repeat(v_full, repeats=self.n_groups, axis=1)  # (B, H, T, Dh)
 
         attended = weights @ v_expanded  # (B, H, S, Dh)
         merged = mx.transpose(attended, (0, 2, 1, 3)).reshape(B, S, H * Dh)
@@ -200,14 +203,14 @@ class Qwen3Attention(Module):
         B, S, _D = x.shape
         H, Hkv, Dh = self.n_heads, self.n_kv_heads, self.head_dim
 
-        q = self.q_proj(x).reshape(B, S, H, Dh)      # (B, S, H, Dh)
-        k = self.k_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
-        v = self.v_proj(x).reshape(B, S, Hkv, Dh)    # (B, S, Hkv, Dh)
+        q = self.q_proj(x).reshape(B, S, H, Dh)  # (B, S, H, Dh)
+        k = self.k_proj(x).reshape(B, S, Hkv, Dh)  # (B, S, Hkv, Dh)
+        v = self.v_proj(x).reshape(B, S, Hkv, Dh)  # (B, S, Hkv, Dh)
 
         # Q/K norm must come before RoPE. Applying it after RoPE changes the
         # attention scores and is incorrect for Qwen3.
-        q = self.q_norm(q)                             # (B, S, H, Dh)
-        k = self.k_norm(k)                             # (B, S, Hkv, Dh)
+        q = self.q_norm(q)  # (B, S, H, Dh)
+        k = self.k_norm(k)  # (B, S, Hkv, Dh)
 
         cos, sin = self.cos_sin
         q = apply_rope(q, cos, sin, offset=position_offset)
@@ -229,7 +232,7 @@ class Qwen3Attention(Module):
 
         attended = weights @ v_expanded  # (B, H, S, Dh)
         merged = mx.transpose(attended, (0, 2, 1, 3)).reshape(B, S, H * Dh)  # (B, S, A)
-        return self.o_proj(merged)                                             # (B, S, D)
+        return self.o_proj(merged)  # (B, S, D)
 
 
 def _apply_causal_mask(scores: mx.array, position_offset: int) -> mx.array:
@@ -246,7 +249,7 @@ def _apply_causal_mask(scores: mx.array, position_offset: int) -> mx.array:
     """
     _B, _H, S, T = scores.shape
     query_positions = position_offset + mx.arange(S)  # (S,)
-    key_positions = mx.arange(T)                      # (T,)
+    key_positions = mx.arange(T)  # (T,)
     future_mask = key_positions[None, :] > query_positions[:, None]  # (S, T)
     future_mask = future_mask.reshape(1, 1, S, T)
     return mx.where(future_mask, mx.array(-1e9, dtype=scores.dtype), scores)

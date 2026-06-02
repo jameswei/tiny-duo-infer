@@ -58,7 +58,13 @@ class RMSNorm(Module):
             (B, S, D) normalised and scaled tensor.
         """
         # RMSNorm rescales each token independently across the hidden dimension
-        # only. There is no mean subtraction, unlike LayerNorm.
+        # only. There is no mean subtraction and bias, unlike LayerNorm.
         mean_square = mx.mean(x * x, axis=-1, keepdims=True)  # (B, S, 1)
-        normalized = x * mx.rsqrt(mean_square + self.eps)     # (B, S, D)
-        return normalized * self.weight                       # (B, S, D)
+        # avoid using `x * 1 / sqrt(...)` for better numerical stability:
+        # if sqrt(...) is very small, 1 / sqrt(...) can overflow to INF,
+        # and better performance:
+        # rsqrt(...) is computed into 1 instruction about 4 cycles on GPU,
+        # while 1 / sqrt(...) is computed into 2 instructions (sqrt + div) about 16+20 cycles, almost 9x faster
+        # also `* rsqrt(...)` can be kernel fused.
+        normalized = x * mx.rsqrt(mean_square + self.eps)  # (B, S, D)
+        return normalized * self.weight  # (B, S, D)

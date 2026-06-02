@@ -1,10 +1,10 @@
 """
 Rotary Positional Embeddings (RoPE).
 
-RoPE encodes absolute position information into Q and K tensors before the
+RoPE encodes relative position information into Q and K tensors before the
 attention dot-product. Unlike learned positional embeddings, RoPE uses a fixed
-mathematical rotation that naturally preserves relative position relationships
-in the attention scores.
+mathematical rotation on absolute positions that naturally preserves
+relative position relationships in the attention scores.
 
 How it works:
   Each head vector of dimension Dh is split into Dh/2 consecutive pairs (x0, x1).
@@ -56,13 +56,13 @@ def precompute_freqs(
     # Even indices 0, 2, 4, ..., head_dim-2 → one per pair
     i = mx.arange(0, head_dim, 2, dtype=mx.float32)  # (head_dim // 2,)
     # freq_i = 1 / (theta ^ (2i / head_dim)) — lower frequencies for later pairs
-    freqs = 1.0 / (theta ** (i / head_dim))           # (head_dim // 2,)
+    freqs = 1.0 / (theta ** (i / head_dim))  # (head_dim // 2,)
 
     # Absolute positions 0, 1, ..., max_seq_len-1
     positions = mx.arange(max_seq_len, dtype=mx.float32)  # (max_seq_len,)
 
-    # angles[pos, i] = pos * freq_i — outer product via broadcasting
-    angles = positions[:, None] * freqs[None, :]          # (max_seq_len, head_dim // 2)
+    # angles[pos, i] = pos * freq_i — outer product via broadcasting, (max_seq_len, head_dim // 2)
+    angles = positions.reshape(-1, 1) * freqs.reshape(1, -1)
 
     cos_table = mx.cos(angles)  # (max_seq_len, head_dim // 2)
     sin_table = mx.sin(angles)  # (max_seq_len, head_dim // 2)

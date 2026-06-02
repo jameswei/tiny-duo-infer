@@ -121,6 +121,7 @@ class KVCache:
                 f"got new_k.shape[1]={new_k.shape[1]}, new_v.shape[1]={new_v.shape[1]}"
             )
         if new_k.shape[2] != new_v.shape[2]:
+            # shape[2] should be either `prompt_len` during prefill or `1` during decode.
             raise ValueError(
                 f"new_k and new_v must have the same sequence length, "
                 f"got {new_k.shape[2]} and {new_v.shape[2]}"
@@ -180,6 +181,8 @@ class KVCache:
     def reset(self) -> None:
         """Zero out all buffers and reset current_len to 0. Call between requests."""
         shape = (1, self._n_kv_heads, self._max_seq_len, self._head_dim)
+        # why here didn't use list comprehension like in `__init__`?
+        # mutation rather than re-construction, no any efficiency difference.
         for i in range(self._n_layers):
             self._keys[i] = mx.zeros(shape)
             self._values[i] = mx.zeros(shape)

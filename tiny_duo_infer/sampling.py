@@ -23,7 +23,7 @@ import mlx.core as mx
 
 def greedy(logits: mx.array) -> int:
     """
-    Return the token ID with the highest logit.
+    Return the token ID with the **highest** logit.
 
     Greedy decoding is deterministic: the same logits always produce the same
     token. It is the M1.6 baseline and equivalent to temperature→0 or top_k=1
@@ -103,7 +103,9 @@ def sample(
     if top_p < 1.0:
         # Sort indices descending by logit so we process the most likely tokens first.
         desc_idx = mx.argsort(-logits)
+        # fancy indexing to sort logits by descending order
         sorted_logits = logits[desc_idx]
+        # also descending order probabilities
         probs = mx.softmax(sorted_logits)
         cumprobs = mx.cumsum(probs)
         # cumprobs[i] - probs[i] is the cumulative probability strictly before

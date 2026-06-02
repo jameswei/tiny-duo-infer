@@ -45,4 +45,7 @@ class Backend(Protocol):
         """
 
     def to_numpy(self, x: any) -> np.ndarray:
-        """Convert a backend tensor to a NumPy array for CPU-side processing."""
+        """
+        Convert a backend tensor to a NumPy array for CPU-side processing.
+        For example, sampling.
+        """

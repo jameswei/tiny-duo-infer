@@ -2,7 +2,7 @@
 SwiGLU Feed-Forward Network.
 
 Llama uses a gated FFN variant called SwiGLU. Unlike a standard two-layer FFN
-(W2 * silu(W1 * x)), SwiGLU uses three weight matrices and a multiplicative
+(W2 * silu(W1 * x)), SwiGLU uses 3 weight matrices and a multiplicative
 gate:
     gate = silu(gate_proj(x))   — activation path, shape (B, S, I)
     up   = up_proj(x)           — gate path,       shape (B, S, I)
@@ -34,7 +34,7 @@ class SwiGLUFFN(Module):
     """
     SwiGLU Feed-Forward Network used in Llama.
 
-    Three independent linear projections: gate_proj and up_proj expand the
+    3 independent linear projections: gate_proj and up_proj expand the
     hidden state from D to I; their element-wise product (with SiLU applied
     to gate only) is projected back to D by down_proj.
 
@@ -66,7 +66,7 @@ class SwiGLUFFN(Module):
             config: model config supplying d_model and intermediate_size.
         """
         self.gate_proj = Linear(config.d_model, config.intermediate_size)
-        self.up_proj   = Linear(config.d_model, config.intermediate_size)
+        self.up_proj = Linear(config.d_model, config.intermediate_size)
         self.down_proj = Linear(config.intermediate_size, config.d_model)
 
     def forward(self, x: mx.array) -> mx.array:
@@ -78,7 +78,7 @@ class SwiGLUFFN(Module):
         """
         # Both gate and up project from the same input — separate weight matrices
         gate = self.gate_proj(x)  # (B, S, I)
-        up   = self.up_proj(x)    # (B, S, I)
+        up = self.up_proj(x)  # (B, S, I)
 
         # SiLU on gate only: x * sigmoid(x) = x / (1 + exp(-x))
         # Do NOT use mlx.nn.SiLU or any high-level activation
