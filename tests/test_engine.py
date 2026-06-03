@@ -607,13 +607,29 @@ def test_generate_request_max_new_tokens_zero(tiny_model_config):
     assert resp.stop_reason == "max_new_tokens"
 
 
-def test_generate_request_rejects_chat_mode(tiny_model_config):
-    """generate_request() raises ValueError for chat mode until T04 is implemented."""
+def test_generate_request_rejects_chat_mode_for_llama(tiny_model_config):
+    """generate_request() with chat=True raises ValueError for Llama (base model, no template)."""
     engine = _make_sequence_engine(tiny_model_config, [10])
     msgs = [ChatMessage(role="user", content="hello")]
     req = GenerationRequest(messages=msgs, chat=True, max_new_tokens=5, temperature=0.0)
     with pytest.raises(ValueError, match="[Cc]hat"):
         engine.generate_request(req)
+
+
+def test_generate_request_chat_encodes_chatml_prompt(tiny_qwen3_model_config):
+    """generate_request() with chat=True passes the ChatML-formatted string to the tokenizer."""
+    tokenizer = _FakeTokenizer([7, 8, 9])
+    engine = Engine(
+        model=_SequenceModel(tiny_qwen3_model_config, [10]),
+        tokenizer=tokenizer,
+        config=tiny_qwen3_model_config,
+        max_seq_len=tiny_qwen3_model_config.max_seq_len,
+    )
+    msgs = [ChatMessage(role="user", content="Hello")]
+    req = GenerationRequest(messages=msgs, chat=True, max_new_tokens=1, temperature=0.0)
+    engine.generate_request(req)
+    expected = "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
+    assert tokenizer.encode_calls[0][0] == expected
 
 
 # ---------------------------------------------------------------------------

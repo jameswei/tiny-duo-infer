@@ -24,7 +24,8 @@ import mlx.core as mx
 
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
-from tiny_duo_infer.generation import GenerationRequest, GenerationResponse
+from tiny_duo_infer.generation import ChatMessage, GenerationRequest, GenerationResponse
+from tiny_duo_infer.prompt import format_chat_prompt
 from tiny_duo_infer.models.base import Module
 from tiny_duo_infer.models.llama import LlamaModel
 from tiny_duo_infer.models.qwen3 import Qwen3Model
@@ -318,24 +319,28 @@ class Engine:
         given seed. Greedy decoding (temperature=0.0) is already deterministic
         without a seed; seed has no effect in that case.
 
-        Chat formatting (request.messages / request.chat) is not yet supported;
-        pass a plain prompt string. Chat support is added in T04.
+        Chat mode: if request.chat is True, messages (or a plain prompt wrapped
+        as a user message) are formatted into a prompt string via
+        format_chat_prompt() before tokenization. Qwen3 uses the ChatML
+        template; Llama raises ValueError (base model, no chat template).
 
         Args:
-            request: validated GenerationRequest with a plain prompt string.
+            request: validated GenerationRequest.
 
         Returns:
             GenerationResponse with full text, token counts, and stop reason.
 
         Raises:
-            ValueError: if request uses messages or chat=True.
+            ValueError: if chat=True and the model family does not support it.
         """
-        if request.messages is not None or request.chat:
-            raise ValueError(
-                "Chat formatting is not yet implemented. Use prompt= instead of messages=."
-            )
-
-        prompt_str = request.prompt  # type: ignore[assignment]
+        if request.chat:
+            if request.messages is not None:
+                msgs = request.messages
+            else:
+                msgs = [ChatMessage(role="user", content=request.prompt)]  # type: ignore[arg-type]
+            prompt_str = format_chat_prompt(msgs, self.config.model_type)
+        else:
+            prompt_str = request.prompt  # type: ignore[assignment]
         token_ids = self.tokenizer.encode(prompt_str, add_special_tokens=True)
         prompt_tokens = len(token_ids)
 

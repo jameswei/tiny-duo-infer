@@ -25,6 +25,7 @@
 | `cli.py` | argparse CLI wrapper over `Engine` |
 | `config.py` | `ModelConfig` dataclass, `load_config()` from `config.json` |
 | `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` — validated request types and response metadata |
+| `prompt.py` | `format_chat_prompt()` — ChatML template for Qwen3; raises `ValueError` for Llama (base model) |
 
 ### `models/`
 
@@ -83,6 +84,7 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `test_engine.py` | Prefill/decode state transitions, eval placement, `max_new_tokens` |
 | `test_cli.py` | CLI args, fake-engine integration |
 | `test_generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` validation |
+| `test_prompt.py` | `format_chat_prompt()` ChatML output, Llama rejection, unsupported model, empty messages |
 
 ---
 
