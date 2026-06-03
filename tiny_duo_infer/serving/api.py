@@ -32,11 +32,9 @@ Entrypoint:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 from pathlib import Path
-from typing import Iterator
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -149,10 +147,11 @@ async def generate(body: GenerateRequestBody) -> GenerateResponseBody:
         raise HTTPException(status_code=422, detail=str(exc))
 
     try:
-        loop = asyncio.get_running_loop()
-        response: GenerationResponse = await loop.run_in_executor(
-            None, engine.generate_request, request
-        )
+        # Run the engine directly in the event loop rather than a thread pool.
+        # MLX GPU streams are thread-local; running on the event-loop thread
+        # avoids the "no Stream(gpu) in current thread" error on Apple Silicon.
+        # Blocking the event loop is acceptable for a single-request server.
+        response: GenerationResponse = engine.generate_request(request)
     finally:
         _lock.release()
 
@@ -193,7 +192,9 @@ async def generate_stream(body: GenerateRequestBody) -> StreamingResponse:
         _lock.release()
         raise HTTPException(status_code=422, detail=str(exc))
 
-    def _iter_ndjson() -> Iterator[str]:
+    async def _iter_ndjson():
+        # Async generator keeps iteration on the event-loop thread, which is
+        # required for MLX GPU stream thread-affinity on Apple Silicon.
         try:
             for item in engine.generate_stream(request):
                 if isinstance(item, GenerationResponse):

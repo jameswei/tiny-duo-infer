@@ -291,19 +291,36 @@ def test_generate_stream_invalid_request_returns_422():
 
 @pytest.mark.slow
 def test_qwen3_generate_smoke():
-    """POST /generate against real Qwen3 model completes and returns metadata."""
+    """POST /generate against real Qwen3 model completes and returns metadata.
+
+    Uses httpx.AsyncClient + ASGITransport so the engine and ASGI handler both
+    run in the same anyio thread, satisfying MLX GPU stream thread-affinity.
+    (starlette TestClient spawns a separate portal thread, which breaks MLX.)
+    """
+    import anyio
     import os
     from pathlib import Path
+    from httpx import AsyncClient, ASGITransport
     from tiny_duo_infer.engine import Engine
+    import tiny_duo_infer.serving.api as api_module
 
-    model_path = os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b")
-    engine = Engine.from_model_path(Path(model_path), max_seq_len=512)
-    client = TestClient(create_app(engine))
+    model_path = Path(os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b"))
 
-    resp = client.post(
-        "/generate",
-        json={"prompt": "The capital of France is", "max_new_tokens": 2, "temperature": 0.0},
-    )
+    async def _run():
+        # Load engine synchronously in the event-loop thread (blocks the loop,
+        # but acceptable in tests). This ensures the MLX GPU stream is on the
+        # same thread that the ASGI handler will use.
+        engine = Engine.from_model_path(model_path, max_seq_len=512)
+        create_app(engine)
+        async with AsyncClient(
+            transport=ASGITransport(app=api_module.app), base_url="http://test"
+        ) as client:
+            return await client.post(
+                "/generate",
+                json={"prompt": "The capital of France is", "max_new_tokens": 2, "temperature": 0.0},
+            )
+
+    resp = anyio.run(_run)
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["text"], str)
@@ -312,19 +329,32 @@ def test_qwen3_generate_smoke():
 
 @pytest.mark.slow
 def test_qwen3_generate_stream_smoke():
-    """POST /generate/stream against real Qwen3 model returns valid NDJSON."""
+    """POST /generate/stream against real Qwen3 model returns valid NDJSON.
+
+    Uses httpx.AsyncClient + ASGITransport so the engine and ASGI handler both
+    run in the same anyio thread, satisfying MLX GPU stream thread-affinity.
+    """
+    import anyio
     import os
     from pathlib import Path
+    from httpx import AsyncClient, ASGITransport
     from tiny_duo_infer.engine import Engine
+    import tiny_duo_infer.serving.api as api_module
 
-    model_path = os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b")
-    engine = Engine.from_model_path(Path(model_path), max_seq_len=512)
-    client = TestClient(create_app(engine))
+    model_path = Path(os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b"))
 
-    resp = client.post(
-        "/generate/stream",
-        json={"prompt": "Hello", "max_new_tokens": 2, "temperature": 0.0},
-    )
+    async def _run():
+        engine = Engine.from_model_path(model_path, max_seq_len=512)
+        create_app(engine)
+        async with AsyncClient(
+            transport=ASGITransport(app=api_module.app), base_url="http://test"
+        ) as client:
+            return await client.post(
+                "/generate/stream",
+                json={"prompt": "Hello", "max_new_tokens": 2, "temperature": 0.0},
+            )
+
+    resp = anyio.run(_run)
     assert resp.status_code == 200
     chunks = _parse_ndjson(resp.text)
     assert chunks[-1]["done"] is True
