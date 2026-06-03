@@ -259,6 +259,19 @@ Concurrency behavior:
   response. Pick one behavior in the serving task and document it.
 - Do not implement a scheduler or request queue in Phase 1.6.
 
+Lifecycle behavior:
+
+- The CLI and HTTP server are separate interfaces with separate engine
+  lifecycles.
+- The CLI path may create an engine in-process and run generation directly for
+  one-shot local use.
+- The HTTP server path must own its own engine initialization and shutdown
+  context.
+- Do not construct an engine on the CLI main thread and hand that instance to
+  the HTTP server runtime.
+- If the server needs thread affinity for MLX, initialize and use the engine in
+  the same server-owned execution context.
+
 Server entrypoint example:
 
 ```bash

@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 import tiny_duo_infer.serving.api as api_module
 from tiny_duo_infer.generation import GenerationRequest, GenerationResponse
-from tiny_duo_infer.serving.api import create_app
+from tiny_duo_infer.serving.api import create_app, create_app_from_path
 
 
 # ---------------------------------------------------------------------------
@@ -83,13 +82,13 @@ class _SlowFakeEngine:
 
 @pytest.fixture(autouse=True)
 def reset_server_state():
-    """Reset module-level engine and lock between tests."""
-    api_module._engine = None
-    if api_module._lock.locked():
-        api_module._lock.release()
+    """Shut down any worker created in a previous test and clear module state."""
+    old_worker = api_module._worker
+    api_module._worker = None
     yield
-    if api_module._lock.locked():
-        api_module._lock.release()
+    if api_module._worker is not None:
+        api_module._worker.shutdown()
+    api_module._worker = old_worker
 
 
 # ---------------------------------------------------------------------------
@@ -97,19 +96,18 @@ def reset_server_state():
 # ---------------------------------------------------------------------------
 
 
-def test_engine_not_initialized_does_not_leak_lock():
-    """Requests before create_app() fail cleanly without leaving the lock held."""
+def test_worker_not_initialized_returns_500_cleanly():
+    """Requests before create_app() fail cleanly with 500, not 503."""
     from tiny_duo_infer.serving.api import app as _app
 
-    api_module._engine = None
+    api_module._worker = None
     client = TestClient(_app, raise_server_exceptions=False)
 
-    # First request: engine not initialised → 500
+    # First request: worker not initialised → 500
     resp1 = client.post("/generate", json={"prompt": "hi"})
     assert resp1.status_code == 500
-    assert not api_module._lock.locked(), "lock must be released after engine error"
 
-    # Second request: also returns 500, not 503 (lock was not leaked)
+    # Second request: also returns 500, not 503 (no busy state leaked)
     resp2 = client.post("/generate", json={"prompt": "hi"})
     assert resp2.status_code != 503
 
@@ -124,15 +122,24 @@ def test_health_returns_ok_when_idle():
     assert body["active"] is False
 
 
-def test_health_shows_active_when_locked():
-    """GET /health reports active=True while the lock is held."""
-    client = TestClient(create_app(_FakeEngine()))
-    api_module._lock.acquire()
-    try:
-        resp = client.get("/health")
-        assert resp.json()["active"] is True
-    finally:
-        api_module._lock.release()
+def test_health_shows_active_while_request_running():
+    """GET /health reports active=True while a generation request is active."""
+    slow = _SlowFakeEngine()
+    client = TestClient(create_app(slow), raise_server_exceptions=False)
+    results: dict[str, object] = {}
+
+    def make_request():
+        results["gen"] = client.post("/generate", json={"prompt": "hi"})
+
+    t = threading.Thread(target=make_request)
+    t.start()
+    slow.started.wait(timeout=5)
+
+    resp = client.get("/health")
+    assert resp.json()["active"] is True
+
+    slow.release.set()
+    t.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -293,34 +300,19 @@ def test_generate_stream_invalid_request_returns_422():
 def test_qwen3_generate_smoke():
     """POST /generate against real Qwen3 model completes and returns metadata.
 
-    Uses httpx.AsyncClient + ASGITransport so the engine and ASGI handler both
-    run in the same anyio thread, satisfying MLX GPU stream thread-affinity.
-    (starlette TestClient spawns a separate portal thread, which breaks MLX.)
+    Uses create_app_from_path so the engine is initialised inside the
+    InferenceWorker thread — MLX GPU stream stays on that thread throughout.
     """
-    import anyio
     import os
     from pathlib import Path
-    from httpx import AsyncClient, ASGITransport
-    from tiny_duo_infer.engine import Engine
-    import tiny_duo_infer.serving.api as api_module
 
     model_path = Path(os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b"))
+    client = TestClient(create_app_from_path(model_path, max_seq_len=512))
 
-    async def _run():
-        # Load engine synchronously in the event-loop thread (blocks the loop,
-        # but acceptable in tests). This ensures the MLX GPU stream is on the
-        # same thread that the ASGI handler will use.
-        engine = Engine.from_model_path(model_path, max_seq_len=512)
-        create_app(engine)
-        async with AsyncClient(
-            transport=ASGITransport(app=api_module.app), base_url="http://test"
-        ) as client:
-            return await client.post(
-                "/generate",
-                json={"prompt": "The capital of France is", "max_new_tokens": 2, "temperature": 0.0},
-            )
-
-    resp = anyio.run(_run)
+    resp = client.post(
+        "/generate",
+        json={"prompt": "The capital of France is", "max_new_tokens": 2, "temperature": 0.0},
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert isinstance(body["text"], str)
@@ -331,30 +323,19 @@ def test_qwen3_generate_smoke():
 def test_qwen3_generate_stream_smoke():
     """POST /generate/stream against real Qwen3 model returns valid NDJSON.
 
-    Uses httpx.AsyncClient + ASGITransport so the engine and ASGI handler both
-    run in the same anyio thread, satisfying MLX GPU stream thread-affinity.
+    Uses create_app_from_path so the engine is initialised inside the
+    InferenceWorker thread — MLX GPU stream stays on that thread throughout.
     """
-    import anyio
     import os
     from pathlib import Path
-    from httpx import AsyncClient, ASGITransport
-    from tiny_duo_infer.engine import Engine
-    import tiny_duo_infer.serving.api as api_module
 
     model_path = Path(os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b"))
+    client = TestClient(create_app_from_path(model_path, max_seq_len=512))
 
-    async def _run():
-        engine = Engine.from_model_path(model_path, max_seq_len=512)
-        create_app(engine)
-        async with AsyncClient(
-            transport=ASGITransport(app=api_module.app), base_url="http://test"
-        ) as client:
-            return await client.post(
-                "/generate/stream",
-                json={"prompt": "Hello", "max_new_tokens": 2, "temperature": 0.0},
-            )
-
-    resp = anyio.run(_run)
+    resp = client.post(
+        "/generate/stream",
+        json={"prompt": "Hello", "max_new_tokens": 2, "temperature": 0.0},
+    )
     assert resp.status_code == 200
     chunks = _parse_ndjson(resp.text)
     assert chunks[-1]["done"] is True

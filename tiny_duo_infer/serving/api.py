@@ -7,9 +7,15 @@ Exposes three endpoints over FastAPI:
   POST /generate         — full-response generation (JSON).
   POST /generate/stream  — streaming generation (NDJSON).
 
-The server loads one model per process and serializes requests with a
-threading.Lock. Concurrent requests receive a 503 "server busy" response
-rather than waiting in a queue.
+The server loads one model per process and serializes requests through a
+single InferenceWorker thread.  Concurrent requests receive a 503 "server
+busy" response rather than waiting in a queue.
+
+Engine lifecycle separation:
+  - CLI: engine is owned directly by the CLI process (no HTTP layer).
+  - HTTP server: engine is owned by InferenceWorker, which initialises it
+    inside its dedicated thread so that all MLX GPU operations stay on that
+    thread (Apple Silicon GPU stream thread-affinity requirement).
 
 Streaming format (NDJSON, one JSON object per line):
 
@@ -24,33 +30,50 @@ match is confirmed. The final chunk always carries the correctly trimmed text
 (as a convenience copy); streaming callers that need strict trimming should use
 POST /generate instead.
 
-Entrypoint:
+Entrypoints:
+    # Production (engine initialised inside worker thread):
     uv run python -m tiny_duo_infer.serving.api \\
       --model-path ./models/qwen3-0.6b \\
       --max-seq-len 2048
+
+    # Testing (wrap a pre-built engine):
+    create_app(fake_engine)
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from tiny_duo_infer.engine import Engine
 from tiny_duo_infer.generation import ChatMessage, GenerationRequest, GenerationResponse
+from tiny_duo_infer.serving.worker import InferenceWorker
+
+
+_worker: InferenceWorker | None = None
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Worker is created before uvicorn.run() via create_app_from_path();
+    # nothing to do on startup.
+    yield
+    # Shut down the worker on server stop so the inference thread exits cleanly.
+    if _worker is not None:
+        _worker.shutdown()
 
 
 app = FastAPI(
     title="tiny-duo-infer",
     description="Single-request local LLM inference server.",
+    lifespan=_lifespan,
 )
-
-_engine: Engine | None = None
-_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +132,13 @@ def _to_generation_request(body: GenerateRequestBody) -> GenerationRequest:
     )
 
 
-def _require_engine() -> Engine:
-    if _engine is None:
-        raise RuntimeError("engine not initialized; call create_app(engine) first")
-    return _engine
+def _require_worker() -> InferenceWorker:
+    if _worker is None:
+        raise RuntimeError(
+            "inference worker not initialised; "
+            "call create_app() or create_app_from_path() first"
+        )
+    return _worker
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +149,8 @@ def _require_engine() -> Engine:
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     """Return server liveness and whether a generation request is active."""
-    return HealthResponse(status="ok", active=_lock.locked())
+    active = _worker.busy if _worker is not None else False
+    return HealthResponse(status="ok", active=active)
 
 
 @app.post("/generate", response_model=GenerateResponseBody)
@@ -133,28 +160,22 @@ async def generate(body: GenerateRequestBody) -> GenerateResponseBody:
 
     Returns 503 if another request is currently being processed.
     Returns 422 if request fields fail GenerationRequest validation.
-    Returns 500 if the server was not initialised via create_app().
+    Returns 500 if the server was not initialised.
     """
-    # Resolve engine before acquiring the lock so a missing engine never
-    # leaves the server in a permanently-busy state.
-    engine = _require_engine()
-    if not _lock.acquire(blocking=False):
-        raise HTTPException(status_code=503, detail="server busy")
+    worker = _require_worker()
+
     try:
         request = _to_generation_request(body)
     except ValueError as exc:
-        _lock.release()
         raise HTTPException(status_code=422, detail=str(exc))
 
-    try:
-        # Run the engine directly in the event loop rather than a thread pool.
-        # MLX GPU streams are thread-local; running on the event-loop thread
-        # avoids the "no Stream(gpu) in current thread" error on Apple Silicon.
-        # Blocking the event loop is acceptable for a single-request server.
-        response: GenerationResponse = engine.generate_request(request)
-    finally:
-        _lock.release()
+    loop = asyncio.get_event_loop()
+    future: asyncio.Future[GenerationResponse] = loop.create_future()
 
+    if not worker.submit_generate(request, future, loop):
+        raise HTTPException(status_code=503, detail="server busy")
+
+    response = await future
     return GenerateResponseBody(
         text=response.text,
         prompt_tokens=response.prompt_tokens,
@@ -179,49 +200,67 @@ async def generate_stream(body: GenerateRequestBody) -> StreamingResponse:
 
     Returns 503 if another request is currently being processed.
     Returns 422 if request fields fail GenerationRequest validation.
-    Returns 500 if the server was not initialised via create_app().
+    Returns 500 if the server was not initialised.
     """
-    # Resolve engine before acquiring the lock so a missing engine never
-    # leaves the server in a permanently-busy state.
-    engine = _require_engine()
-    if not _lock.acquire(blocking=False):
-        raise HTTPException(status_code=503, detail="server busy")
+    worker = _require_worker()
+
     try:
         request = _to_generation_request(body)
     except ValueError as exc:
-        _lock.release()
         raise HTTPException(status_code=422, detail=str(exc))
 
+    loop = asyncio.get_event_loop()
+    item_queue: asyncio.Queue[Any] = asyncio.Queue()
+
+    if not worker.submit_stream(request, item_queue, loop):
+        raise HTTPException(status_code=503, detail="server busy")
+
     async def _iter_ndjson():
-        # Async generator keeps iteration on the event-loop thread, which is
-        # required for MLX GPU stream thread-affinity on Apple Silicon.
-        try:
-            for item in engine.generate_stream(request):
-                if isinstance(item, GenerationResponse):
-                    yield json.dumps({
-                        "done": True,
-                        "text": item.text,
-                        "prompt_tokens": item.prompt_tokens,
-                        "generated_tokens": item.generated_tokens,
-                        "stop_reason": item.stop_reason,
-                    }) + "\n"
-                else:
-                    yield json.dumps({"done": False, "text": item}) + "\n"
-        finally:
-            _lock.release()
+        while True:
+            item = await item_queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            if isinstance(item, GenerationResponse):
+                yield json.dumps({
+                    "done": True,
+                    "text": item.text,
+                    "prompt_tokens": item.prompt_tokens,
+                    "generated_tokens": item.generated_tokens,
+                    "stop_reason": item.stop_reason,
+                }) + "\n"
+            else:
+                yield json.dumps({"done": False, "text": item}) + "\n"
 
     return StreamingResponse(_iter_ndjson(), media_type="application/x-ndjson")
 
 
 # ---------------------------------------------------------------------------
-# App factory (used by tests and the CLI entrypoint)
+# App factories
 # ---------------------------------------------------------------------------
 
 
-def create_app(engine: Engine) -> FastAPI:
-    """Bind a loaded engine to the server and return the configured app."""
-    global _engine
-    _engine = engine
+def create_app(engine: Any) -> FastAPI:
+    """Wrap a pre-built engine and return the configured app.
+
+    Intended for unit tests that supply a fake engine.  The engine is wrapped
+    in an InferenceWorker so routing is identical to the production path.
+    """
+    global _worker
+    _worker = InferenceWorker.from_engine(engine)
+    return app
+
+
+def create_app_from_path(model_path: Path, max_seq_len: int = 2048) -> FastAPI:
+    """Load the engine inside the inference worker thread and return the app.
+
+    Use this for production and slow smoke tests.  The engine is initialised
+    on the worker thread so all MLX GPU operations remain on that thread
+    (Apple Silicon GPU stream thread-affinity requirement).
+    """
+    global _worker
+    _worker = InferenceWorker.from_path(model_path, max_seq_len)
     return app
 
 
@@ -251,6 +290,5 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
     args = parser.parse_args()
 
-    _loaded = Engine.from_model_path(Path(args.model_path), max_seq_len=args.max_seq_len)
-    create_app(_loaded)
+    create_app_from_path(Path(args.model_path), max_seq_len=args.max_seq_len)
     uvicorn.run(app, host=args.host, port=args.port)
