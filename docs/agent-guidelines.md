@@ -16,6 +16,8 @@ Use this source-of-truth order:
 1. Active phase spec:
    - Phase 1 completed under `docs/phases/phase-1-mlx-single-user.md`.
    - Phase 1.5 Qwen3 work uses `docs/phases/phase-1.5-qwen3-mlx.md`.
+   - Phase 1.6 generation UX and serving work uses
+     `docs/phases/phase-1.6-generation-serving.md`.
 2. `docs/architecture.md`: active architecture reference and subsystem
    boundaries.
 3. `docs/refined-plan.md`: settled project direction, roadmap, and
@@ -308,6 +310,10 @@ Phase 1.5 Qwen3 work is tracked in
 `docs/phases/phase-1.5-taskboard.md` and governed by
 `docs/phases/phase-1.5-qwen3-mlx.md`.
 
+Phase 1.6 generation UX and serving work is tracked in
+`docs/phases/phase-1.6-taskboard.md` and governed by
+`docs/phases/phase-1.6-generation-serving.md`.
+
 Phase 1 and Phase 1.5 smoke tests should verify mechanical behavior only:
 
 - local model artifacts load when available
@@ -357,6 +363,8 @@ Unless a later ADR changes these defaults, agents should assume:
 - learning clarity over raw performance
 - MLX backend first
 - Qwen3 model-family support in Phase 1.5 before PyTorch/CUDA backend work
+- generation UX and single-request serving in Phase 1.6 before PyTorch/CUDA
+  while the NVIDIA development environment is unavailable
 - PyTorch/CUDA backend second
 - multi-user serving third
 - single-request execution in phase 1
@@ -365,11 +373,14 @@ Unless a later ADR changes these defaults, agents should assume:
 - `Qwen/Qwen3-0.6B` as the Phase 1.5 model-portability target
 - base model only in phase 1; no instruct/chat-template support
 - no full chat-template support in Phase 1.5
+- simple chat prompt formatting may be introduced in Phase 1.6, but full
+  Transformers chat-template parity and conversation memory remain out of scope
 - `tokenizers` as the phase-1 runtime tokenizer dependency
 - `transformers` only as an optional dev/test reference
 - TinyLlama only as an optional fallback or debug target, not a phase-1
   acceptance target
 - no C++ code
 - no HTTP server in phase 1
+- Phase 1.6 HTTP serving is single-request only; no batching or scheduler
 - no quantization, speculative decoding, paged attention, or distributed
   inference in phase 1

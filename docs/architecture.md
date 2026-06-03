@@ -134,11 +134,11 @@ tiny_duo_infer/
     __init__.py
     loader.py         — tokenizers-package wrapper
 
-  serving/            — Phase 3 only
+  serving/            — Phase 1.6 single-request HTTP; Phase 3 scheduling
     __init__.py
     request.py        — Request dataclass, state machine
-    scheduler.py      — FIFO → continuous batching
-    block_manager.py  — PagedAttention KV page pool
+    scheduler.py      — FIFO → continuous batching (Phase 3)
+    block_manager.py  — PagedAttention KV page pool (Phase 3)
     api.py            — FastAPI HTTP server
 
 scripts/
@@ -304,7 +304,9 @@ Benefits over Phase 1 design:
 
 Phase 1 targets `meta-llama/Llama-3.2-1B` (base model). Phase 1.5 adds
 `Qwen/Qwen3-0.6B` on the same MLX backend to exercise model-family
-portability before Phase 2 introduces backend portability.
+portability before Phase 2 introduces backend portability. Phase 1.6 adds
+generation UX and single-request local serving while the CUDA development
+environment is deferred.
 
 ### Llama-3.2-1B
 
@@ -384,9 +386,21 @@ vocab_size: int
 | Concurrency | single request | single request | single request | multiple concurrent |
 | KV cache | pre-allocated static | same | same | PagedAttention |
 | Scheduling | none | none | none | FIFO → continuous batching |
-| Serving | CLI only | CLI + benchmarks | CLI + benchmarks | + HTTP API (FastAPI) |
+| Serving | CLI only | CLI + benchmarks | CLI + benchmarks | + multi-request HTTP serving |
 | Sampling | greedy → top-k/p/temp | same | same | same |
 | Model | Llama-3.2-1B (base) | + Qwen3-0.6B | same supported models | same supported models |
+
+Phase 1.6 fits between Phase 1.5 and Phase 2:
+
+| Concern | Phase 1.6 |
+|---|---|
+| Backend | MLX (direct) |
+| Concurrency | one active request per process |
+| KV cache | pre-allocated static |
+| Scheduling | none; lock or busy response only |
+| Serving | refined CLI + single-request HTTP API |
+| Streaming | expose existing generation iterator |
+| Prompting | plain prompt + simple chat formatting |
 
 ---
 
@@ -396,9 +410,9 @@ These are explicit non-goals for the current roadmap. Raising them as
 implementation proposals requires an ADR.
 
 - C++ or custom CUDA kernels — all phases
-- Full instruct/chat-template support — dropped from Phase 1 and deferred from
-  Phase 1.5; base prompt-to-completion is sufficient for learning inference
-  mechanics, and chat formatting is not part of the tensor execution path
+- Full instruct/chat-template parity — dropped from Phase 1 and deferred from
+  Phase 1.5; Phase 1.6 may add simple chat prompt formatting, but not
+  Transformers `apply_chat_template()` parity or conversation memory
 - Training or fine-tuning — all phases
 - Quantization (INT8/INT4 weights)
 - Speculative decoding

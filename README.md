@@ -1,8 +1,8 @@
 # tiny-duo-infer
 
 A tiny inference engine implementation for learning purposes. Phase 1 runs on
-Apple Silicon with MLX; later phases add model-family portability, then a
-PyTorch/CUDA backend.
+Apple Silicon with MLX; later phases add model-family portability, generation
+UX, local serving, then a PyTorch/CUDA backend.
 
 ## What It Is
 
@@ -16,7 +16,8 @@ PyTorch/CUDA backend.
 |---|---|---|
 | Phase 1 | Single-user inference on Apple Silicon using MLX | Done |
 | Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
-| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Not started |
+| Phase 1.6 | Refine generation UX and add single-request local HTTP serving | Planned |
+| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred |
 | Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
 
 ## Model Targets

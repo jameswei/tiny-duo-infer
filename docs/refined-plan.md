@@ -28,17 +28,20 @@ prefer readable, teachable code over compact or highly optimized code.
 
 ## Roadmap
 
-The project follows three major phases, with Phase 1.5 inserted after Phase 1
-to add a second model family before backend portability:
+The project follows three major phases, with Phase 1.5 and Phase 1.6 inserted
+after Phase 1 before backend portability:
 
 1. Phase 1: single-user local inference on Apple Silicon using MLX.
 2. Phase 1.5: add `Qwen/Qwen3-0.6B` support on the same MLX backend.
-3. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
-4. Phase 3: add multi-user serving concepts such as queues, scheduling,
+3. Phase 1.6: refine generation UX and add single-request local HTTP serving.
+4. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
+5. Phase 3: add multi-user serving concepts such as queues, scheduling,
    batching, streaming, and PagedAttention-style KV-cache management.
 
 Qwen3 support is useful for learning model-family portability before adding a
-second backend. CUDA support is useful for industry alignment. Multi-user
+second backend. Phase 1.6 is useful for learning request boundaries,
+generation controls, and streaming I/O while the CUDA development environment
+is unavailable. CUDA support remains useful for industry alignment. Multi-user
 serving is useful for learning the concepts that make vLLM-like systems
 interesting.
 
@@ -90,6 +93,14 @@ source-of-truth contract is `docs/phases/phase-1.5-qwen3-mlx.md`. This phase
 keeps MLX, single-request execution, and plain prompt-to-completion generation,
 but introduces model-family differences such as explicit `head_dim`, Q/K
 normalization before RoPE, Qwen3 weight conversion, and model-type dispatch.
+
+Phase 1.6 adds generation UX and local serving features on top of the same MLX
+engine. The source-of-truth contract is
+`docs/phases/phase-1.6-generation-serving.md`. This phase keeps one active
+request at a time, but adds structured request/response metadata, stop strings,
+token accounting, optional chat prompt formatting, refined CLI flags, and a
+single-request HTTP API. It does not introduce batching, PagedAttention, or a
+PyTorch/CUDA backend.
 
 Tokenizer plan:
 
@@ -461,6 +472,8 @@ Important docs:
 - `docs/phases/phase-1-mlx-single-user.md`: phase-1 implementation contract
 - `docs/phases/phase-1.5-qwen3-mlx.md`: phase-1.5 Qwen3 implementation contract
 - `docs/phases/phase-1.5-taskboard.md`: phase-1.5 task tracking and review state
+- `docs/phases/phase-1.6-generation-serving.md`: phase-1.6 generation UX and serving contract
+- `docs/phases/phase-1.6-taskboard.md`: phase-1.6 task tracking and review state
 - `docs/adr/*.md`: durable decisions
 
 Recommended next documentation steps before implementation:
@@ -501,12 +514,15 @@ Unless changed by a future ADR, these decisions are settled:
 - Python `>=3.12,<3.13`
 - base `meta-llama/Llama-3.2-1B` for phase 1
 - `Qwen/Qwen3-0.6B` as the Phase 1.5 model-portability target
+- generation UX and single-request serving as the Phase 1.6 target
 - no instruct/chat support in phase 1
 - no full chat-template support in phase 1.5
+- no full Transformers chat-template parity or conversation memory in phase 1.6
 - `tokenizers` runtime dependency for tokenization
 - `transformers` only as optional dev/test reference
 - MLX first
 - Qwen3 model-family support before backend expansion
+- Phase 1.6 before backend expansion while the NVIDIA development environment is unavailable
 - PyTorch/CUDA second
 - multi-user serving third
 - learning clarity over raw performance

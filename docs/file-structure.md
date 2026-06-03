@@ -104,6 +104,8 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `phases/phase-1-handoff.md` | Completion handoff: verification results, smoke tests, known gaps |
 | `phases/phase-1.5-qwen3-mlx.md` | Phase 1.5 implementation contract: Qwen3-0.6B support on MLX |
 | `phases/phase-1.5-taskboard.md` | Phase 1.5 task tracking, ownership, status, review gates |
+| `phases/phase-1.6-generation-serving.md` | Phase 1.6 implementation contract: generation UX and single-request serving |
+| `phases/phase-1.6-taskboard.md` | Phase 1.6 task tracking, ownership, status, review gates |
 
 ---
 
