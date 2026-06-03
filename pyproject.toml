@@ -16,6 +16,9 @@ dev = [
     "safetensors>=0.4",
 ]
 
+[project.scripts]
+tiny-duo-infer = "tiny_duo_infer.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

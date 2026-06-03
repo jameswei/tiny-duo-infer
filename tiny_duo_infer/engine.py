@@ -136,8 +136,18 @@ class Engine:
         Returns:
             (V,) logits for the final prompt position. Decode uses this vector
             to sample the first generated token.
+
+        Raises:
+            ValueError: if the prompt is empty or does not fit in max_seq_len.
         """
         token_ids = self.tokenizer.encode(prompt, add_special_tokens=True)
+        prompt_tokens_len = len(token_ids)
+        if prompt_tokens_len == 0:
+            raise ValueError("prompt must encode to at least one token")
+        if prompt_tokens_len > self.max_seq_len:
+            raise ValueError(
+                f"prompt token length {prompt_tokens_len} exceeds max_seq_len={self.max_seq_len}"
+            )
         return self.prefill_token_ids(token_ids)
 
     def prefill_token_ids(self, token_ids: list[int]) -> mx.array:
@@ -155,12 +165,6 @@ class Engine:
             ValueError: if the prompt is empty or does not fit in max_seq_len.
         """
         prompt_len = len(token_ids)
-        if prompt_len == 0:
-            raise ValueError("prefill requires at least one token")
-        if prompt_len > self.max_seq_len:
-            raise ValueError(
-                f"prompt length {prompt_len} exceeds max_seq_len={self.max_seq_len}"
-            )
 
         cache = self._new_cache()
         input_ids = mx.array([token_ids], dtype=mx.int32)  # (B=1, S)
@@ -178,6 +182,8 @@ class Engine:
         # buffers before decode reads positions [0, prompt_len).
         mx.eval(final_logits)
         cache.eval()
+        # this is a exception-safety pattern, which guarantees that the cache is set
+        # only if the prefill forward pass completes successfully.
         self.cache = cache
         return final_logits
 
@@ -244,7 +250,9 @@ class Engine:
 
         # Sample the first generated token from the prefill logits.
         # This token sits at absolute position cache.current_len (= prompt_len).
-        next_token = sample(first_logits, temperature=temperature, top_k=top_k, top_p=top_p)
+        next_token = sample(
+            first_logits, temperature=temperature, top_k=top_k, top_p=top_p
+        )
 
         for step in range(max_new_tokens):
             # EOS check: stop before yielding the stop token so callers never
@@ -263,8 +271,9 @@ class Engine:
             # position_offset tells the attention layer where in the sequence
             # this token sits, so RoPE and the causal mask are correct.
             input_ids = mx.array([[next_token]])  # (B=1, S=1)
-            position_offset = self.cache.current_len
-            logits = self.model(input_ids, self.cache, position_offset)  # (1, 1, V)
+            logits = self.model(
+                input_ids, self.cache, position_offset=self.cache.current_len
+            )  # (1, 1, V)
 
             # Flush MLX's lazy computation graph at the engine boundary, not
             # inside individual layers. The next line materialises logits before
@@ -282,7 +291,9 @@ class Engine:
             # all 16 layers during the next decode step.
             self.cache.advance(1)
 
-            next_token = sample(logits[0, 0, :], temperature=temperature, top_k=top_k, top_p=top_p)
+            next_token = sample(
+                logits[0, 0, :], temperature=temperature, top_k=top_k, top_p=top_p
+            )
 
 
 ModelClass = type[LlamaModel] | type[Qwen3Model]
