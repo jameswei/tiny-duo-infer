@@ -51,3 +51,22 @@ uv run python -m tiny_duo_infer.cli \
 The CLI uses plain prompt-to-completion mode. It does not apply Qwen3 chat
 templates or system/user/assistant message formatting; those are prompt
 formatting concerns outside the current engine scope.
+
+## Development Checks
+
+Install development dependencies:
+
+```bash
+uv sync --group dev
+```
+
+Run the fast local test suite manually:
+
+```bash
+uv run pytest -q
+git diff --check
+```
+
+GitHub Actions runs the same fast regression gate on pushes and pull requests.
+Slow real-model smoke tests remain manual phase-close checks because they
+require local model artifacts and hardware.

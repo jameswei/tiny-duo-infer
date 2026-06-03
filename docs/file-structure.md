@@ -7,6 +7,7 @@
 | File | Purpose |
 |---|---|
 | `pyproject.toml` | Runtime deps: `mlx`, `tokenizers`, `safetensors`, `huggingface-hub`. Dev: `pytest`, `transformers` |
+| `.github/workflows/test.yml` | CI regression gate for pushes and pull requests |
 | `README.md` | Project overview, supported models, roadmap |
 | `AGENTS.md` | Entry point for AI agents — doc reading order |
 

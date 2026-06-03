@@ -24,6 +24,7 @@ import mlx.core as mx
 
 import tiny_duo_infer.engine as engine_module
 from tiny_duo_infer.engine import Engine
+from tiny_duo_infer.generation import ChatMessage, GenerationRequest
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +470,128 @@ def test_generate_greedy_is_deterministic(tiny_model_config):
     out1 = list(engine1.generate("hello", max_new_tokens=4, temperature=0.0))
     out2 = list(engine2.generate("hello", max_new_tokens=4, temperature=0.0))
     assert out1 == out2
+
+
+# ---------------------------------------------------------------------------
+# generate_request() tests (unit)
+# ---------------------------------------------------------------------------
+
+
+def _make_sequence_engine(tiny_model_config, token_sequence, max_seq_len=None):
+    """Engine with _SequenceModel for controlled generate_request() tests."""
+    return Engine(
+        model=_SequenceModel(tiny_model_config, token_sequence),
+        tokenizer=_FakeTokenizer([7, 8, 9]),
+        config=tiny_model_config,
+        max_seq_len=max_seq_len or tiny_model_config.max_seq_len,
+    )
+
+
+def test_generate_request_stops_on_eos(tiny_model_config):
+    """generate_request() stops at EOS and returns stop_reason='eos'."""
+    eos = _FakeTokenizer.eos_token_id  # 0
+    # call 0 (prefill): steer first generated token to 10
+    # call 1 (decode):  steer next token to eos → stop
+    engine = _make_sequence_engine(tiny_model_config, [10, eos])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stop_reason == "eos"
+    assert resp.text == "10"
+    assert resp.generated_tokens == 1
+
+
+def test_generate_request_stops_on_max_new_tokens(tiny_model_config):
+    """generate_request() stops after max_new_tokens with correct stop_reason."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 30, 40, 50])
+    req = GenerationRequest(prompt="hello", max_new_tokens=3, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stop_reason == "max_new_tokens"
+    assert resp.generated_tokens == 3
+    assert resp.text == "102030"
+
+
+def test_generate_request_stops_on_stop_string(tiny_model_config):
+    """generate_request() stops when a stop string appears in the decoded output."""
+    # decode([99]) = "99"; stop string "99" appears in accumulated text "1099"
+    engine = _make_sequence_engine(tiny_model_config, [10, 99, 30])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0, stop=["99"])
+    resp = engine.generate_request(req)
+    assert resp.stop_reason == "stop_string"
+    assert "99" not in resp.text
+    assert resp.text == "10"
+
+
+def test_generate_request_stop_string_excluded_from_text(tiny_model_config):
+    """Text returned by generate_request() does not include the matched stop marker."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 99, 30])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0, stop=["99"])
+    resp = engine.generate_request(req)
+    assert resp.text == "1020"
+    assert "99" not in resp.text
+
+
+def test_generate_request_stops_on_context_length(tiny_model_config):
+    """generate_request() stops with 'context_length' when the KV cache is full."""
+    # max_seq_len=4, prompt=[7,8,9] (len=3): one decode slot at position 3.
+    # Step 0: token 10 at position 3 is valid → yielded, cache advances to 4.
+    # Step 1: context_length check fires BEFORE decoding token 20 (position 4
+    #   is out of bounds) → stop with generated_tokens=1.
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 30], max_seq_len=4)
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stop_reason == "context_length"
+    assert resp.generated_tokens == 1
+    assert resp.text == "10"
+
+
+def test_generate_request_records_prompt_token_count(tiny_model_config):
+    """prompt_tokens equals the length of the encoded prompt."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    # _FakeTokenizer always encodes to [7, 8, 9] → 3 tokens
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.prompt_tokens == 3
+
+
+def test_generate_request_records_generated_token_count(tiny_model_config):
+    """generated_tokens counts tokens produced by the decode loop."""
+    eos = _FakeTokenizer.eos_token_id
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, eos])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.generated_tokens == 2
+    assert resp.stop_reason == "eos"
+
+
+def test_generate_request_eos_priority_over_stop_string(tiny_model_config):
+    """EOS stops generation before the stop-string check runs for that token."""
+    eos = _FakeTokenizer.eos_token_id  # 0; decode([0]) = "0"
+    # Step 0: token=5, text="5", stop="0" not in "5" → continue
+    # Step 1: token=eos=0 → EOS check fires before decode([0])="0" is compared
+    engine = _make_sequence_engine(tiny_model_config, [5, eos])
+    req = GenerationRequest(prompt="hi", max_new_tokens=10, temperature=0.0, stop=["0"])
+    resp = engine.generate_request(req)
+    assert resp.stop_reason == "eos"
+    assert resp.text == "5"
+
+
+def test_generate_request_max_new_tokens_zero(tiny_model_config):
+    """max_new_tokens=0 returns empty text immediately with stop_reason='max_new_tokens'."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    req = GenerationRequest(prompt="hello", max_new_tokens=0, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.text == ""
+    assert resp.generated_tokens == 0
+    assert resp.stop_reason == "max_new_tokens"
+
+
+def test_generate_request_rejects_chat_mode(tiny_model_config):
+    """generate_request() raises ValueError for chat mode until T04 is implemented."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    msgs = [ChatMessage(role="user", content="hello")]
+    req = GenerationRequest(messages=msgs, chat=True, max_new_tokens=5, temperature=0.0)
+    with pytest.raises(ValueError, match="[Cc]hat"):
+        engine.generate_request(req)
 
 
 # ---------------------------------------------------------------------------

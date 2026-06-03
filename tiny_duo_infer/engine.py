@@ -24,6 +24,7 @@ import mlx.core as mx
 
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
+from tiny_duo_infer.generation import GenerationRequest, GenerationResponse
 from tiny_duo_infer.models.base import Module
 from tiny_duo_infer.models.llama import LlamaModel
 from tiny_duo_infer.models.qwen3 import Qwen3Model
@@ -300,6 +301,104 @@ class Engine:
             next_token = sample(
                 logits[0, 0, :], temperature=temperature, top_k=top_k, top_p=top_p
             )
+
+    def generate_request(self, request: GenerationRequest) -> GenerationResponse:
+        """
+        Run a full generation loop from a validated GenerationRequest.
+
+        Implements all four stop conditions in priority order:
+          1. EOS token sampled — stops before yielding or decoding the token.
+          2. Stop string found in accumulated decoded text — trims the marker.
+          3. max_new_tokens reached — loop exhausted.
+          4. Context length full — no room for another decode step.
+
+        Chat formatting (request.messages / request.chat) is not yet supported;
+        pass a plain prompt string. Chat support is added in T04.
+
+        Args:
+            request: validated GenerationRequest with a plain prompt string.
+
+        Returns:
+            GenerationResponse with full text, token counts, and stop reason.
+
+        Raises:
+            ValueError: if request uses messages or chat=True.
+        """
+        if request.messages is not None or request.chat:
+            raise ValueError(
+                "Chat formatting is not yet implemented. Use prompt= instead of messages=."
+            )
+
+        prompt_str = request.prompt  # type: ignore[assignment]
+        token_ids = self.tokenizer.encode(prompt_str, add_special_tokens=True)
+        prompt_tokens = len(token_ids)
+
+        first_logits = self.prefill_token_ids(token_ids)
+        next_token = sample(
+            first_logits,
+            temperature=request.temperature,
+            top_k=request.top_k,
+            top_p=request.top_p,
+        )
+
+        fragments: list[str] = []
+        generated_tokens = 0
+        stop_reason = "max_new_tokens"
+
+        for step in range(request.max_new_tokens):
+            # Stop condition 1: EOS (before decoding — EOS is never yielded)
+            if next_token == self.tokenizer.eos_token_id:
+                stop_reason = "eos"
+                break
+
+            # Stop condition 4: context full (before decoding — a token sampled
+            # for an out-of-bounds position is never yielded or counted)
+            if self.cache.current_len >= self.max_seq_len:
+                stop_reason = "context_length"
+                break
+
+            fragment = self.tokenizer.decode([next_token])
+            fragments.append(fragment)
+            generated_tokens += 1
+
+            # Stop condition 2: stop string in accumulated text
+            current_text = "".join(fragments)
+            stop_string_hit = False
+            for s in request.stop:
+                idx = current_text.find(s)
+                if idx != -1:
+                    fragments = [current_text[:idx]]
+                    stop_reason = "stop_string"
+                    stop_string_hit = True
+                    break
+            if stop_string_hit:
+                break
+
+            # Stop condition 3: max_new_tokens exhausted (skip decode on last step)
+            if step == request.max_new_tokens - 1:
+                break
+
+            input_ids = mx.array([[next_token]])
+            logits = self.model(
+                input_ids, self.cache, position_offset=self.cache.current_len
+            )
+            mx.eval(logits)
+            self.cache.eval()
+            self.cache.advance(1)
+
+            next_token = sample(
+                logits[0, 0, :],
+                temperature=request.temperature,
+                top_k=request.top_k,
+                top_p=request.top_p,
+            )
+
+        return GenerationResponse(
+            text="".join(fragments),
+            prompt_tokens=prompt_tokens,
+            generated_tokens=generated_tokens,
+            stop_reason=stop_reason,
+        )
 
 
 ModelClass = type[LlamaModel] | type[Qwen3Model]
