@@ -23,6 +23,7 @@
 | `sampling.py` | `greedy()`, `sample()` — temperature, top-k, top-p token selection |
 | `cli.py` | argparse CLI wrapper over `Engine` |
 | `config.py` | `ModelConfig` dataclass, `load_config()` from `config.json` |
+| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` — validated request types and response metadata |
 
 ### `models/`
 
@@ -80,6 +81,7 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `test_sampling.py` | `greedy()`, `sample()` edge cases |
 | `test_engine.py` | Prefill/decode state transitions, eval placement, `max_new_tokens` |
 | `test_cli.py` | CLI args, fake-engine integration |
+| `test_generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` validation |
 
 ---
 

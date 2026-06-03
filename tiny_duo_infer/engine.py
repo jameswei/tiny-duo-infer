@@ -165,6 +165,12 @@ class Engine:
             ValueError: if the prompt is empty or does not fit in max_seq_len.
         """
         prompt_len = len(token_ids)
+        if prompt_len == 0:
+            raise ValueError("prefill requires at least one token.")
+        if prompt_len > self.max_seq_len:
+            raise ValueError(
+                f"prompt length {prompt_len} exceeds max_seq_len={self.max_seq_len}."
+            )
 
         cache = self._new_cache()
         input_ids = mx.array([token_ids], dtype=mx.int32)  # (B=1, S)
