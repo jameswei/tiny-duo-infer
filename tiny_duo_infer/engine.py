@@ -312,6 +312,12 @@ class Engine:
           3. max_new_tokens reached — loop exhausted.
           4. Context length full — no room for another decode step.
 
+        Seeded sampling: if request.seed is set, mx.random.seed() is called
+        after prefill and before the first sample. This resets MLX's global
+        PRNG state so all token draws in the loop are deterministic for the
+        given seed. Greedy decoding (temperature=0.0) is already deterministic
+        without a seed; seed has no effect in that case.
+
         Chat formatting (request.messages / request.chat) is not yet supported;
         pass a plain prompt string. Chat support is added in T04.
 
@@ -334,6 +340,10 @@ class Engine:
         prompt_tokens = len(token_ids)
 
         first_logits = self.prefill_token_ids(token_ids)
+
+        if request.seed is not None:
+            mx.random.seed(request.seed)
+
         next_token = sample(
             first_logits,
             temperature=request.temperature,

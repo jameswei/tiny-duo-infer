@@ -477,6 +477,28 @@ def test_generate_greedy_is_deterministic(tiny_model_config):
 # ---------------------------------------------------------------------------
 
 
+class _UniformModel:
+    """
+    Model double that returns all-zeros logits — uniform distribution after softmax.
+
+    Used for seeded sampling tests where non-trivial randomness is needed:
+    any token in the vocabulary is equally likely, so the chosen token depends
+    entirely on the PRNG state (seed).
+    """
+
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def __call__(self, input_ids: mx.array, cache, position_offset: int) -> mx.array:
+        B, S = input_ids.shape
+        Hkv, Dh = self.config.n_kv_heads, self.config.head_dim
+        for layer_idx in range(self.config.n_layers):
+            new_k = mx.zeros((B, Hkv, S, Dh))
+            new_v = mx.zeros((B, Hkv, S, Dh))
+            cache.update(layer_idx, new_k, new_v, position=position_offset)
+        return mx.zeros((B, S, self.config.vocab_size))
+
+
 def _make_sequence_engine(tiny_model_config, token_sequence, max_seq_len=None):
     """Engine with _SequenceModel for controlled generate_request() tests."""
     return Engine(
@@ -592,6 +614,64 @@ def test_generate_request_rejects_chat_mode(tiny_model_config):
     req = GenerationRequest(messages=msgs, chat=True, max_new_tokens=5, temperature=0.0)
     with pytest.raises(ValueError, match="[Cc]hat"):
         engine.generate_request(req)
+
+
+# ---------------------------------------------------------------------------
+# Seeded sampling tests (unit)
+# ---------------------------------------------------------------------------
+
+
+def _make_uniform_engine(tiny_model_config):
+    """Engine with _UniformModel for seeded sampling tests."""
+    return Engine(
+        model=_UniformModel(tiny_model_config),
+        tokenizer=_FakeTokenizer([7, 8, 9]),
+        config=tiny_model_config,
+        max_seq_len=tiny_model_config.max_seq_len,
+    )
+
+
+def test_generate_request_seed_makes_sampling_deterministic(tiny_model_config):
+    """Same seed produces identical token sequences across two generate_request() calls."""
+    engine1 = _make_uniform_engine(tiny_model_config)
+    engine2 = _make_uniform_engine(tiny_model_config)
+    req = GenerationRequest(prompt="hello", max_new_tokens=5, temperature=1.0, seed=42)
+    resp1 = engine1.generate_request(req)
+    resp2 = engine2.generate_request(req)
+    assert resp1.text == resp2.text
+    assert resp1.generated_tokens == resp2.generated_tokens
+
+
+def test_generate_request_different_seeds_produce_different_output(tiny_model_config):
+    """Different seeds produce different token sequences on uniform logits."""
+    engine0 = _make_uniform_engine(tiny_model_config)
+    engine1 = _make_uniform_engine(tiny_model_config)
+    req0 = GenerationRequest(prompt="hello", max_new_tokens=5, temperature=1.0, seed=0)
+    req1 = GenerationRequest(prompt="hello", max_new_tokens=5, temperature=1.0, seed=1)
+    resp0 = engine0.generate_request(req0)
+    resp1 = engine1.generate_request(req1)
+    # With uniform logits over 256 tokens, the probability that 5 independent
+    # draws are identical for two different seeds is (1/256)^5 ≈ 10^-12.
+    assert resp0.text != resp1.text
+
+
+def test_generate_request_seed_none_uses_current_prng_state(tiny_model_config):
+    """seed=None does not crash and leaves PRNG state managed by the caller."""
+    engine = _make_uniform_engine(tiny_model_config)
+    req = GenerationRequest(prompt="hello", max_new_tokens=3, temperature=1.0, seed=None)
+    resp = engine.generate_request(req)
+    assert resp.generated_tokens == 3
+
+
+def test_generate_request_seed_no_effect_on_greedy(tiny_model_config):
+    """Greedy decoding (temperature=0.0) is deterministic regardless of seed."""
+    engine0 = _make_sequence_engine(tiny_model_config, [10, 20, 30])
+    engine1 = _make_sequence_engine(tiny_model_config, [10, 20, 30])
+    req0 = GenerationRequest(prompt="hello", max_new_tokens=3, temperature=0.0, seed=0)
+    req1 = GenerationRequest(prompt="hello", max_new_tokens=3, temperature=0.0, seed=99)
+    resp0 = engine0.generate_request(req0)
+    resp1 = engine1.generate_request(req1)
+    assert resp0.text == resp1.text
 
 
 # ---------------------------------------------------------------------------
