@@ -27,7 +27,7 @@ UX, local serving, then a PyTorch/CUDA backend.
 
 ## Local CLI
 
-Llama example:
+Plain completion (Llama or Qwen3):
 
 ```bash
 uv run python -m tiny_duo_infer.cli \
@@ -37,20 +37,39 @@ uv run python -m tiny_duo_infer.cli \
   --temperature 0.0
 ```
 
-Qwen3 example:
+Qwen3 chat mode — wrap a plain prompt as a user message and apply the ChatML
+template:
 
 ```bash
 uv run python -m tiny_duo_infer.cli \
   --model-path ./models/qwen3-0.6b \
-  --prompt "The capital of France is" \
-  --max-new-tokens 32 \
-  --temperature 0.7 \
-  --top-p 0.8
+  --prompt "What is the capital of France?" \
+  --chat \
+  --max-new-tokens 64 \
+  --temperature 0.7
 ```
 
-The CLI uses plain prompt-to-completion mode. It does not apply Qwen3 chat
-templates or system/user/assistant message formatting; those are prompt
-formatting concerns outside the current engine scope.
+Qwen3 chat mode with explicit system and user messages:
+
+```bash
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/qwen3-0.6b \
+  --message system:"You are a concise assistant." \
+  --message user:"What is the capital of France?" \
+  --max-new-tokens 64 \
+  --temperature 0.7
+```
+
+Additional flags (all models):
+
+| Flag | Description |
+|---|---|
+| `--stop TEXT` | Stop when TEXT appears in output (repeatable). |
+| `--seed N` | Seed for deterministic probabilistic sampling. |
+| `--show-stats` | Print `prompt_tokens`, `generated_tokens`, and `stop_reason` after generation. |
+
+Llama-3.2-1B is a base completion model. Chat mode (`--chat` or `--message`)
+raises an error for Llama because it has no chat template.
 
 ## Development Checks
 
