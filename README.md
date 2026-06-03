@@ -71,6 +71,41 @@ Additional flags (all models):
 Llama-3.2-1B is a base completion model. Chat mode (`--chat` or `--message`)
 raises an error for Llama because it has no chat template.
 
+## HTTP Server
+
+Start the single-request inference server:
+
+```bash
+uv run python -m tiny_duo_infer.serving.api \
+  --model-path ./models/qwen3-0.6b \
+  --max-seq-len 2048
+```
+
+Full-response generation (JSON):
+
+```bash
+curl -s http://127.0.0.1:8000/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0}'
+```
+
+Streaming generation (NDJSON, one JSON object per line):
+
+```bash
+curl -s http://127.0.0.1:8000/generate/stream \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Once upon a time", "max_new_tokens": 32}'
+```
+
+Server status:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+The server handles one request at a time. Concurrent requests receive a 503
+"server busy" response.
+
 ## Development Checks
 
 Install development dependencies:

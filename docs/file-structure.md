@@ -58,6 +58,12 @@
 |---|---|
 | `loader.py` | `Tokenizer.from_pretrained()`: wraps `tokenizers`, exposes `encode()`/`decode()`/`bos_token_id`/`eos_token_id` |
 
+### `serving/`
+
+| File | Purpose |
+|---|---|
+| `api.py` | FastAPI app: `GET /health`, `POST /generate` (JSON), `POST /generate/stream` (NDJSON); `create_app(engine)` factory; CLI entrypoint via `__main__` |
+
 ### `backends/`
 
 | File | Purpose |
@@ -85,6 +91,7 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `test_cli.py` | CLI args, fake-engine integration |
 | `test_generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` validation |
 | `test_prompt.py` | `format_chat_prompt()` ChatML output, Llama rejection, unsupported model, empty messages |
+| `test_serving.py` | HTTP server endpoints, NDJSON streaming, busy response, validation |
 
 ---
 

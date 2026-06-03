@@ -15,10 +15,9 @@ Phase 1/1.5 supports one active request at a time.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterator
 
 import mlx.core as mx
 
@@ -307,22 +306,9 @@ class Engine:
         """
         Run a full generation loop from a validated GenerationRequest.
 
-        Implements all four stop conditions in priority order:
-          1. EOS token sampled — stops before yielding or decoding the token.
-          2. Stop string found in accumulated decoded text — trims the marker.
-          3. max_new_tokens reached — loop exhausted.
-          4. Context length full — no room for another decode step.
-
-        Seeded sampling: if request.seed is set, mx.random.seed() is called
-        after prefill and before the first sample. This resets MLX's global
-        PRNG state so all token draws in the loop are deterministic for the
-        given seed. Greedy decoding (temperature=0.0) is already deterministic
-        without a seed; seed has no effect in that case.
-
-        Chat mode: if request.chat is True, messages (or a plain prompt wrapped
-        as a user message) are formatted into a prompt string via
-        format_chat_prompt() before tokenization. Qwen3 uses the ChatML
-        template; Llama raises ValueError (base model, no chat template).
+        Thin wrapper over _run_generation(). Collects all fragments and returns
+        a single GenerationResponse with the full text, token counts, and stop
+        reason. For streaming fragment-by-fragment, use generate_stream().
 
         Args:
             request: validated GenerationRequest.
@@ -332,6 +318,62 @@ class Engine:
 
         Raises:
             ValueError: if chat=True and the model family does not support it.
+        """
+        for item in self._run_generation(request):
+            if isinstance(item, GenerationResponse):
+                return item
+        raise AssertionError("_run_generation did not yield a GenerationResponse")
+
+    def generate_stream(
+        self, request: GenerationRequest
+    ) -> Iterator[str | GenerationResponse]:
+        """
+        Run generation and yield decoded fragments as they are produced.
+
+        Yields one str per generated token. After all tokens, yields a final
+        GenerationResponse with accumulated token counts and stop reason. The
+        text field of the final response matches what generate_request() would
+        return (stop-string trimmed if applicable).
+
+        Stop-string handling: stop strings are checked before each fragment is
+        yielded. If the marker falls within the current fragment, only the text
+        before the marker is yielded. If the marker starts inside a
+        previously-yielded fragment (multi-token marker), the already-streamed
+        portion cannot be recalled; only the new text in the current fragment
+        before the marker position is suppressed. The final GenerationResponse
+        text is always correctly trimmed.
+
+        Args:
+            request: validated GenerationRequest.
+
+        Yields:
+            str: decoded text fragment for each new token, in generation order.
+            GenerationResponse: final item with full metadata (always last).
+        """
+        return self._run_generation(request)
+
+    def _run_generation(
+        self, request: GenerationRequest
+    ) -> Iterator[str | GenerationResponse]:
+        """
+        Core generation loop shared by generate_request() and generate_stream().
+
+        Implements all four stop conditions in priority order:
+          1. EOS token sampled — stops before yielding or decoding the token.
+          2. Stop string found in accumulated decoded text — trims the marker.
+          3. max_new_tokens reached — loop exhausted.
+          4. Context length full — no room for another decode step.
+
+        Seeded sampling: if request.seed is set, mx.random.seed() is called
+        after prefill and before the first sample.
+
+        Chat mode: if request.chat is True, messages (or a plain prompt wrapped
+        as a user message) are formatted via format_chat_prompt() before
+        tokenization.
+
+        Yields:
+            str: each decoded text fragment during generation.
+            GenerationResponse: single final item with accumulated metadata.
         """
         if request.chat:
             if request.messages is not None:
@@ -376,8 +418,14 @@ class Engine:
             fragments.append(fragment)
             generated_tokens += 1
 
-            # Stop condition 2: stop string in accumulated text
+            # Stop condition 2: check stop strings BEFORE yielding so the stop
+            # marker itself is never streamed when it falls inside the current
+            # fragment. Only the text preceding the marker in this fragment is
+            # yielded. If the marker starts inside a previously-yielded fragment
+            # (multi-token marker), the already-streamed portion cannot be
+            # recalled; pre_stop is empty in that case.
             current_text = "".join(fragments)
+            already_yielded_len = len(current_text) - len(fragment)
             stop_string_hit = False
             for s in request.stop:
                 idx = current_text.find(s)
@@ -385,7 +433,14 @@ class Engine:
                     fragments = [current_text[:idx]]
                     stop_reason = "stop_string"
                     stop_string_hit = True
+                    pre_stop = current_text[already_yielded_len:idx]
+                    if pre_stop:
+                        yield pre_stop
                     break
+
+            if not stop_string_hit:
+                yield fragment
+
             if stop_string_hit:
                 break
 
@@ -408,7 +463,7 @@ class Engine:
                 top_p=request.top_p,
             )
 
-        return GenerationResponse(
+        yield GenerationResponse(
             text="".join(fragments),
             prompt_tokens=prompt_tokens,
             generated_tokens=generated_tokens,
