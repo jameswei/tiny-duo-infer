@@ -23,6 +23,7 @@ import pytest
 import mlx.core as mx
 
 import tiny_duo_infer.engine as engine_module
+from tiny_duo_infer.context_policy import ContextBudgetError
 from tiny_duo_infer.engine import Engine
 from tiny_duo_infer.generation import ChatMessage, GenerationRequest
 
@@ -555,11 +556,12 @@ def test_generate_request_stop_string_excluded_from_text(tiny_model_config):
 def test_generate_request_stops_on_context_length(tiny_model_config):
     """generate_request() stops with 'context_length' when the KV cache is full."""
     # max_seq_len=4, prompt=[7,8,9] (len=3): one decode slot at position 3.
+    # max_new_tokens=4 (<=max_seq_len so context policy admits the request).
     # Step 0: token 10 at position 3 is valid → yielded, cache advances to 4.
     # Step 1: context_length check fires BEFORE decoding token 20 (position 4
     #   is out of bounds) → stop with generated_tokens=1.
     engine = _make_sequence_engine(tiny_model_config, [10, 20, 30], max_seq_len=4)
-    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    req = GenerationRequest(prompt="hello", max_new_tokens=4, temperature=0.0)
     resp = engine.generate_request(req)
     assert resp.stop_reason == "context_length"
     assert resp.generated_tokens == 1
@@ -691,22 +693,229 @@ def test_generate_request_seed_no_effect_on_greedy(tiny_model_config):
 
 
 # ---------------------------------------------------------------------------
+# generate_request() stats (unit)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_request_stats_populated(tiny_model_config):
+    """generate_request() populates stats on the response."""
+    eos = _FakeTokenizer.eos_token_id
+    engine = _make_sequence_engine(tiny_model_config, [10, eos])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stats is not None
+
+
+def test_generate_request_stats_eos(tiny_model_config):
+    """Stats for eos stop: stop_reason matches, tokens consistent."""
+    eos = _FakeTokenizer.eos_token_id
+    engine = _make_sequence_engine(tiny_model_config, [10, eos])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.stop_reason == "eos" == resp.stop_reason
+    assert s.generated_tokens == resp.generated_tokens == 1
+    assert s.prompt_tokens == resp.prompt_tokens == s.accepted_prompt_tokens
+
+
+def test_generate_request_stats_max_new_tokens(tiny_model_config):
+    """Stats for max_new_tokens stop: generated_tokens equals max_new_tokens."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 30])
+    req = GenerationRequest(prompt="hello", max_new_tokens=3, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.stop_reason == "max_new_tokens" == resp.stop_reason
+    assert s.generated_tokens == 3 == resp.generated_tokens
+
+
+def test_generate_request_stats_stop_string(tiny_model_config):
+    """Stats for stop_string stop: stop_reason and invariants hold."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 99, 30])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0, stop=["99"])
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.stop_reason == "stop_string" == resp.stop_reason
+    assert s.prompt_tokens == s.accepted_prompt_tokens
+
+
+def test_generate_request_stats_context_length(tiny_model_config):
+    """Stats for context_length stop: stop_reason and invariants hold."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 30], max_seq_len=4)
+    req = GenerationRequest(prompt="hello", max_new_tokens=4, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.stop_reason == "context_length" == resp.stop_reason
+    assert s.generated_tokens == 1 == resp.generated_tokens
+
+
+def test_generate_request_stats_prompt_tokens_equals_accepted(tiny_model_config):
+    """prompt_tokens == accepted_prompt_tokens (spec invariant)."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    # _FakeTokenizer encodes to [7,8,9] → 3 tokens, no truncation
+    assert s.prompt_tokens == 3
+    assert s.accepted_prompt_tokens == 3
+    assert s.original_prompt_tokens == 3
+    assert s.truncated_prompt_tokens == 0
+
+
+def test_generate_request_stats_active_seq_len(tiny_model_config):
+    """active_seq_len == accepted_prompt_tokens + generated_tokens."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20])
+    req = GenerationRequest(prompt="hello", max_new_tokens=2, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.active_seq_len == s.accepted_prompt_tokens + s.generated_tokens
+
+
+def test_generate_request_stats_kv_bytes(tiny_model_config):
+    """kv_cache_allocated_bytes uses max_seq_len; kv_cache_active_bytes uses active_seq_len."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20, 30])
+    req = GenerationRequest(prompt="hello", max_new_tokens=2, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    # allocated uses full max_seq_len, active uses a smaller active_seq_len
+    assert s.kv_cache_allocated_bytes > s.kv_cache_active_bytes
+    # ratio must equal max_seq_len / active_seq_len
+    assert s.kv_cache_allocated_bytes / s.kv_cache_active_bytes == (
+        s.max_seq_len / s.active_seq_len
+    )
+
+
+def test_generate_request_stats_zero_tokens_zero_throughput(tiny_model_config):
+    """max_new_tokens=0 produces coherent zero throughput."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    req = GenerationRequest(prompt="hello", max_new_tokens=0, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.generated_tokens == 0
+    assert s.decode_tokens_per_sec == 0.0
+    assert s.decode_ms == 0.0
+
+
+def test_generate_request_stats_timing_non_negative(tiny_model_config):
+    """All timing fields are non-negative."""
+    engine = _make_sequence_engine(tiny_model_config, [10, 20])
+    req = GenerationRequest(prompt="hello", max_new_tokens=2, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.prompt_prepare_ms >= 0.0
+    assert s.prefill_ms >= 0.0
+    assert s.time_to_first_token_ms >= 0.0
+    assert s.decode_ms >= 0.0
+    assert s.total_ms >= 0.0
+    assert s.decode_tokens_per_sec >= 0.0
+
+
+def test_generate_request_stats_model_type(tiny_model_config):
+    """stats.model_type matches config.model_type."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stats.model_type == tiny_model_config.model_type
+
+
+def test_generate_request_stats_context_policy_default(tiny_model_config):
+    """Default context_policy is allow_context_stop."""
+    engine = _make_sequence_engine(tiny_model_config, [10])
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stats.context_policy == "allow_context_stop"
+
+
+def test_generate_request_stats_truncate_left(tiny_model_config):
+    """truncate_left policy reduces accepted_prompt_tokens."""
+    # _FakeTokenizer returns [7,8,9] (3 tokens). max_seq_len=4, max_new_tokens=2
+    # budget = 4-2 = 2 → accepted = [8,9] (last 2 tokens), truncated = 1
+    engine = _make_sequence_engine(tiny_model_config, [10], max_seq_len=4)
+    req = GenerationRequest(
+        prompt="hello", max_new_tokens=2, temperature=0.0,
+        context_policy="truncate_left",
+    )
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.context_policy == "truncate_left"
+    assert s.original_prompt_tokens == 3
+    assert s.accepted_prompt_tokens == 2
+    assert s.truncated_prompt_tokens == 1
+    assert s.prompt_tokens == s.accepted_prompt_tokens
+
+
+def test_generate_request_stats_reject_raises(tiny_model_config):
+    """reject policy raises ContextBudgetError when prompt+generation exceeds max_seq_len."""
+    # _FakeTokenizer: 3 prompt tokens, max_new_tokens=62, max_seq_len=64 → 3+62=65 > 64
+    engine = _make_sequence_engine(tiny_model_config, [10], max_seq_len=64)
+    req = GenerationRequest(
+        prompt="hello", max_new_tokens=62, temperature=0.0,
+        context_policy="reject",
+    )
+    with pytest.raises(ContextBudgetError):
+        engine.generate_request(req)
+
+
+def test_generate_stream_final_response_has_stats(tiny_model_config):
+    """generate_stream() final GenerationResponse includes populated stats."""
+    from tiny_duo_infer.generation import GenerationResponse as GR
+    eos = _FakeTokenizer.eos_token_id
+    engine = _make_sequence_engine(tiny_model_config, [10, eos])
+    req = GenerationRequest(prompt="hello", max_new_tokens=10, temperature=0.0)
+    final = None
+    for item in engine.generate_stream(req):
+        if isinstance(item, GR):
+            final = item
+    assert final is not None
+    assert final.stats is not None
+    assert final.stats.stop_reason == "eos"
+
+
+# ---------------------------------------------------------------------------
 # Slow smoke tests (require local model artifacts)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.slow
-def test_engine_smoke():
-    """Load real weights, generate 10 tokens, verify output is non-empty."""
-    pytest.skip("not yet implemented")
-
 
 @pytest.mark.slow
-def test_engine_max_new_tokens():
-    """Verify generation stops at max_new_tokens even without EOS."""
-    pytest.skip("not yet implemented")
+def test_llama_generate_request_stats_smoke():
+    """Real Llama model: generate_request() produces non-negative coherent stats."""
+    import os
+    from pathlib import Path
+
+    model_path = Path(os.environ.get("LLAMA_MODEL_PATH", "./models/llama-3.2-1b"))
+    engine = Engine.from_model_path(model_path, max_seq_len=128)
+    req = GenerationRequest(prompt="The capital of France is", max_new_tokens=3, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s is not None
+    assert s.prompt_prepare_ms >= 0
+    assert s.prefill_ms >= 0
+    assert s.time_to_first_token_ms >= 0
+    assert s.total_ms >= 0
+    assert s.prompt_tokens == s.accepted_prompt_tokens
+    assert s.active_seq_len == s.accepted_prompt_tokens + s.generated_tokens
+    assert s.kv_cache_allocated_bytes > 0
+    assert s.kv_cache_active_bytes > 0
+    assert s.model_type == "llama"
 
 
 @pytest.mark.slow
-def test_engine_greedy_deterministic():
-    """Two greedy generate() calls with same prompt produce identical output."""
-    pytest.skip("not yet implemented")
+def test_qwen3_generate_request_stats_smoke():
+    """Real Qwen3 model: generate_request() produces non-negative coherent stats."""
+    import os
+    from pathlib import Path
+
+    model_path = Path(os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b"))
+    engine = Engine.from_model_path(model_path, max_seq_len=128)
+    req = GenerationRequest(prompt="Hello", max_new_tokens=3, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s is not None
+    assert s.prompt_prepare_ms >= 0
+    assert s.prefill_ms >= 0
+    assert s.time_to_first_token_ms >= 0
+    assert s.total_ms >= 0
+    assert s.prompt_tokens == s.accepted_prompt_tokens
+    assert s.active_seq_len == s.accepted_prompt_tokens + s.generated_tokens
+    assert s.kv_cache_allocated_bytes > 0
+    assert s.kv_cache_active_bytes > 0
+    assert s.model_type == "qwen3"

@@ -18,12 +18,20 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from time import perf_counter
 
 import mlx.core as mx
 
 from tiny_duo_infer.cache import KVCache
 from tiny_duo_infer.config import ModelConfig, load_config
-from tiny_duo_infer.generation import ChatMessage, GenerationRequest, GenerationResponse
+from tiny_duo_infer.context_policy import apply_context_policy
+from tiny_duo_infer.generation import (
+    ChatMessage,
+    GenerationRequest,
+    GenerationResponse,
+    GenerationStats,
+    kv_cache_bytes,
+)
 from tiny_duo_infer.prompt import format_chat_prompt
 from tiny_duo_infer.models.base import Module
 from tiny_duo_infer.models.llama import LlamaModel
@@ -371,10 +379,19 @@ class Engine:
         as a user message) are formatted via format_chat_prompt() before
         tokenization.
 
+        Context policy: apply_context_policy() is called after tokenization and
+        before prefill. The accepted token IDs are passed to prefill; the outcome
+        feeds GenerationStats accounting fields.
+
         Yields:
             str: each decoded text fragment during generation.
-            GenerationResponse: single final item with accumulated metadata.
+            GenerationResponse: single final item with accumulated metadata and
+                GenerationStats.
         """
+        t_total_start = perf_counter()
+
+        # --- Prompt preparation ---
+        t_prepare = perf_counter()
         if request.chat:
             if request.messages is not None:
                 msgs = request.messages
@@ -384,9 +401,20 @@ class Engine:
         else:
             prompt_str = request.prompt  # type: ignore[assignment]
         token_ids = self.tokenizer.encode(prompt_str, add_special_tokens=True)
-        prompt_tokens = len(token_ids)
+        prompt_prepare_ms = (perf_counter() - t_prepare) * 1000.0
 
-        first_logits = self.prefill_token_ids(token_ids)
+        # --- Context policy ---
+        outcome = apply_context_policy(
+            token_ids,
+            request.max_new_tokens,
+            self.max_seq_len,
+            request.context_policy,
+        )
+
+        # --- Prefill ---
+        t_prefill = perf_counter()
+        first_logits = self.prefill_token_ids(outcome.accepted_token_ids)
+        prefill_ms = (perf_counter() - t_prefill) * 1000.0
 
         if request.seed is not None:
             mx.random.seed(request.seed)
@@ -401,22 +429,32 @@ class Engine:
         fragments: list[str] = []
         generated_tokens = 0
         stop_reason = "max_new_tokens"
+        t_first_token: float | None = None
+        decode_ms: float = 0.0
 
         for step in range(request.max_new_tokens):
             # Stop condition 1: EOS (before decoding — EOS is never yielded)
             if next_token == self.tokenizer.eos_token_id:
                 stop_reason = "eos"
+                if t_first_token is None:
+                    t_first_token = perf_counter()
                 break
 
             # Stop condition 4: context full (before decoding — a token sampled
             # for an out-of-bounds position is never yielded or counted)
             if self.cache.current_len >= self.max_seq_len:
                 stop_reason = "context_length"
+                if t_first_token is None:
+                    t_first_token = perf_counter()
                 break
 
             fragment = self.tokenizer.decode([next_token])
             fragments.append(fragment)
             generated_tokens += 1
+
+            # TTFT: first token decoded and ready for the caller.
+            if t_first_token is None:
+                t_first_token = perf_counter()
 
             # Stop condition 2: check stop strings BEFORE yielding so the stop
             # marker itself is never streamed when it falls inside the current
@@ -448,6 +486,7 @@ class Engine:
             if step == request.max_new_tokens - 1:
                 break
 
+            t_step = perf_counter()
             input_ids = mx.array([[next_token]])
             logits = self.model(
                 input_ids, self.cache, position_offset=self.cache.current_len
@@ -455,19 +494,66 @@ class Engine:
             mx.eval(logits)
             self.cache.eval()
             self.cache.advance(1)
-
             next_token = sample(
                 logits[0, 0, :],
                 temperature=request.temperature,
                 top_k=request.top_k,
                 top_p=request.top_p,
             )
+            decode_ms += (perf_counter() - t_step) * 1000.0
+
+        # No token case: max_new_tokens=0, immediate EOS/context_length before
+        # the loop sets t_first_token. Record time when stop is known.
+        if t_first_token is None:
+            t_first_token = perf_counter()
+
+        total_ms = (perf_counter() - t_total_start) * 1000.0
+        ttft_ms = (t_first_token - t_total_start) * 1000.0
+        decode_tokens_per_sec = (
+            generated_tokens / (decode_ms / 1000.0)
+            if decode_ms > 0 and generated_tokens > 0
+            else 0.0
+        )
+
+        active_seq_len = outcome.accepted_prompt_tokens + generated_tokens
+        kv_bpe = self.cache._keys[0].dtype.size
+        kv_allocated = kv_cache_bytes(
+            self.config.n_layers, self.config.n_kv_heads,
+            self.max_seq_len, self.config.head_dim, kv_bpe,
+        )
+        kv_active = kv_cache_bytes(
+            self.config.n_layers, self.config.n_kv_heads,
+            active_seq_len, self.config.head_dim, kv_bpe,
+        )
+
+        stats = GenerationStats(
+            context_policy=request.context_policy,
+            original_prompt_tokens=outcome.original_prompt_tokens,
+            accepted_prompt_tokens=outcome.accepted_prompt_tokens,
+            truncated_prompt_tokens=outcome.truncated_prompt_tokens,
+            rejected_prompt_tokens=outcome.rejected_prompt_tokens,
+            prompt_tokens=outcome.accepted_prompt_tokens,
+            generated_tokens=generated_tokens,
+            stop_reason=stop_reason,
+            prompt_prepare_ms=prompt_prepare_ms,
+            prefill_ms=prefill_ms,
+            time_to_first_token_ms=ttft_ms,
+            decode_ms=decode_ms,
+            total_ms=total_ms,
+            decode_tokens_per_sec=decode_tokens_per_sec,
+            kv_cache_allocated_bytes=kv_allocated,
+            kv_cache_active_bytes=kv_active,
+            max_seq_len=self.max_seq_len,
+            active_seq_len=active_seq_len,
+            model_type=self.config.model_type,
+        )
 
         yield GenerationResponse(
             text="".join(fragments),
-            prompt_tokens=prompt_tokens,
+            prompt_tokens=outcome.accepted_prompt_tokens,
             generated_tokens=generated_tokens,
             stop_reason=stop_reason,
+            stats=stats,
         )
 
 
