@@ -14,14 +14,58 @@ from pathlib import Path
 import pytest
 
 from tiny_duo_infer.cli import main, _parse_message
-from tiny_duo_infer.generation import ChatMessage, GenerationRequest, GenerationResponse
+from tiny_duo_infer.generation import (
+    ChatMessage,
+    GenerationRequest,
+    GenerationResponse,
+    GenerationStats,
+)
+
+
+def _make_fake_stats(**overrides) -> GenerationStats:
+    """Build a `GenerationStats` populated with placeholder values for CLI tests.
+
+    The values are chosen to satisfy `GenerationStats` invariants
+    (`prompt_tokens == accepted_prompt_tokens`,
+    `active_seq_len == accepted_prompt_tokens + generated_tokens`) so the
+    dataclass `__post_init__` does not raise during test setup.
+    """
+    defaults: dict = dict(
+        context_policy="allow_context_stop",
+        original_prompt_tokens=3,
+        accepted_prompt_tokens=3,
+        truncated_prompt_tokens=0,
+        rejected_prompt_tokens=0,
+        prompt_tokens=3,
+        generated_tokens=2,
+        stop_reason="eos",
+        prompt_prepare_ms=0.5,
+        prefill_ms=12.5,
+        time_to_first_token_ms=15.25,
+        decode_ms=20.0,
+        total_ms=33.0,
+        decode_tokens_per_sec=100.0,
+        kv_cache_allocated_bytes=67_108_864,
+        kv_cache_active_bytes=983_040,
+        max_seq_len=2048,
+        active_seq_len=5,  # accepted (3) + generated (2)
+    )
+    defaults.update(overrides)
+    return GenerationStats(**defaults)
 
 
 class _FakeEngine:
-    """Engine test double that records construction and generate_request() arguments."""
+    """Engine test double that records construction and generate_request() arguments.
+
+    By default the fake returns a `GenerationResponse` with `stats=None` so
+    pre-Phase-1.7 tests stay unchanged. Tests that exercise the `--show-stats`
+    output path set `_FakeEngine.next_stats` (or `next_response`) before
+    calling `main()` to inject a populated `GenerationStats`.
+    """
 
     from_model_path_calls: list[tuple[Path, int]] = []
     instances: list["_FakeEngine"] = []
+    next_stats: GenerationStats | None = None
 
     def __init__(self) -> None:
         self.generate_request_calls: list[GenerationRequest] = []
@@ -40,14 +84,16 @@ class _FakeEngine:
             prompt_tokens=3,
             generated_tokens=2,
             stop_reason="eos",
+            stats=type(self).next_stats,
         )
 
 
 @pytest.fixture(autouse=True)
 def reset_fake_engine() -> None:
-    """Clear fake-engine call records before each test."""
+    """Clear fake-engine call records and injected stats before each test."""
     _FakeEngine.from_model_path_calls.clear()
     _FakeEngine.instances.clear()
+    _FakeEngine.next_stats = None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +181,7 @@ def test_main_uses_documented_defaults():
         ["--model-path", "models/tiny", "--prompt", "Prompt"],
         engine_cls=_FakeEngine,
         stdout=StringIO(),
+        stderr=StringIO(),
     )
 
     assert _FakeEngine.from_model_path_calls == [(Path("models/tiny"), 2048)]
@@ -147,6 +194,7 @@ def test_main_uses_documented_defaults():
     assert req.chat is False
     assert req.stop == []
     assert req.seed is None
+    assert req.context_policy == "allow_context_stop"
 
 
 # ---------------------------------------------------------------------------
@@ -252,34 +300,213 @@ def test_main_seed_flag_sets_seed():
 # ---------------------------------------------------------------------------
 
 
-def test_main_show_stats_prints_stats_after_text():
-    """--show-stats appends a stats line after the generated text."""
+def test_main_show_stats_writes_full_block_to_stderr():
+    """--show-stats writes the full Phase 1.7 stats block to stderr.
+
+    Generated text remains on stdout; stats include all 14 spec-required
+    fields. Stdout must not contain any of the stats fields so it can still
+    be piped as plain generated text.
+    """
     stdout = StringIO()
+    stderr = StringIO()
+    _FakeEngine.next_stats = _make_fake_stats(
+        prompt_tokens=7,
+        accepted_prompt_tokens=7,
+        original_prompt_tokens=10,
+        truncated_prompt_tokens=3,
+        active_seq_len=9,
+        generated_tokens=2,
+        prefill_ms=11.111,
+        time_to_first_token_ms=14.444,
+        decode_ms=22.5,
+        total_ms=35.0,
+        decode_tokens_per_sec=42.42,
+        kv_cache_allocated_bytes=67_108_864,
+        kv_cache_active_bytes=983_040,
+        context_policy="truncate_left",
+        stop_reason="eos",
+    )
+
+    exit_code = main(
+        ["--model-path", "models/tiny", "--prompt", "hi", "--show-stats"],
+        engine_cls=_FakeEngine,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    # Generated text stays on stdout, untouched by stats.
+    assert stdout.getvalue() == "hello world"
+
+    err = stderr.getvalue()
+    # Every spec-required field appears in the stats block.
+    expected_substrings = [
+        "prompt_tokens=7",
+        "generated_tokens=2",
+        "stop_reason=eos",
+        "prefill_ms=11.11",
+        "time_to_first_token_ms=14.44",
+        "decode_ms=22.50",
+        "total_ms=35.00",
+        "decode_tokens_per_sec=42.42",
+        "kv_cache_allocated_bytes=67108864",
+        "kv_cache_active_bytes=983040",
+        "context_policy=truncate_left",
+        "original_prompt_tokens=10",
+        "accepted_prompt_tokens=7",
+        "truncated_prompt_tokens=3",
+    ]
+    for substr in expected_substrings:
+        assert substr in err, f"missing {substr!r} in stats block: {err!r}"
+
+
+def test_main_show_stats_one_field_per_line():
+    """The stats block writes one key=value per line, in stable spec order."""
+    stdout = StringIO()
+    stderr = StringIO()
+    _FakeEngine.next_stats = _make_fake_stats()
 
     main(
         ["--model-path", "models/tiny", "--prompt", "hi", "--show-stats"],
         engine_cls=_FakeEngine,
         stdout=stdout,
+        stderr=stderr,
     )
 
-    output = stdout.getvalue()
-    assert output.startswith("hello world")
-    assert "prompt_tokens=3" in output
-    assert "generated_tokens=2" in output
-    assert "stop_reason=eos" in output
+    lines = stderr.getvalue().rstrip("\n").splitlines()
+    keys = [line.split("=", 1)[0] for line in lines]
+    assert keys == [
+        "prompt_tokens",
+        "generated_tokens",
+        "stop_reason",
+        "prefill_ms",
+        "time_to_first_token_ms",
+        "decode_ms",
+        "total_ms",
+        "decode_tokens_per_sec",
+        "kv_cache_allocated_bytes",
+        "kv_cache_active_bytes",
+        "context_policy",
+        "original_prompt_tokens",
+        "accepted_prompt_tokens",
+        "truncated_prompt_tokens",
+    ]
+
+
+def test_main_show_stats_falls_back_when_response_has_no_stats():
+    """Engines without stats (legacy fakes) still get a basic stats line on stderr."""
+    stdout = StringIO()
+    stderr = StringIO()
+    # _FakeEngine.next_stats stays None (fixture default).
+
+    main(
+        ["--model-path", "models/tiny", "--prompt", "hi", "--show-stats"],
+        engine_cls=_FakeEngine,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert stdout.getvalue() == "hello world"
+    err = stderr.getvalue()
+    assert "prompt_tokens=3" in err
+    assert "generated_tokens=2" in err
+    assert "stop_reason=eos" in err
 
 
 def test_main_no_show_stats_by_default():
-    """Stats are not printed unless --show-stats is given."""
+    """Without --show-stats, neither stdout nor stderr receives a stats block."""
     stdout = StringIO()
+    stderr = StringIO()
+    _FakeEngine.next_stats = _make_fake_stats()
 
     main(
         ["--model-path", "models/tiny", "--prompt", "hi"],
         engine_cls=_FakeEngine,
         stdout=stdout,
+        stderr=stderr,
     )
 
     assert stdout.getvalue() == "hello world"
+    assert stderr.getvalue() == ""
+
+
+# ---------------------------------------------------------------------------
+# Context policy flag
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "allow_context_stop",
+        "reject",
+        "truncate_left",
+        "truncate_right",
+        "reserve_generation",
+    ],
+)
+def test_main_context_policy_flag_forwards_value(policy):
+    """All five policies are accepted and forwarded to the request."""
+    main(
+        [
+            "--model-path", "models/tiny",
+            "--prompt", "hi",
+            "--context-policy", policy,
+        ],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    req = _FakeEngine.instances[0].generate_request_calls[0]
+    assert req.context_policy == policy
+
+
+def test_main_context_policy_default_is_allow_context_stop():
+    """Without --context-policy, the request defaults to allow_context_stop."""
+    main(
+        ["--model-path", "models/tiny", "--prompt", "hi"],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    req = _FakeEngine.instances[0].generate_request_calls[0]
+    assert req.context_policy == "allow_context_stop"
+
+
+def test_main_context_policy_with_message_mode_forwards_value():
+    """--context-policy is also forwarded when --message is used."""
+    main(
+        [
+            "--model-path", "models/tiny",
+            "--message", "user:Hi",
+            "--context-policy", "truncate_left",
+        ],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    req = _FakeEngine.instances[0].generate_request_calls[0]
+    assert req.chat is True
+    assert req.context_policy == "truncate_left"
+
+
+def test_main_invalid_context_policy_does_not_load_model():
+    """Unknown context policy fails before the model is loaded."""
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--model-path", "models/tiny",
+                "--prompt", "hi",
+                "--context-policy", "nope",
+            ],
+            engine_cls=_FakeEngine,
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+    assert _FakeEngine.from_model_path_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -405,10 +632,16 @@ def test_qwen3_cli_smoke():
 
 @pytest.mark.slow
 def test_qwen3_cli_chat_smoke():
-    """Run CLI chat mode against local Qwen3 artifacts when available."""
+    """Run CLI chat mode against local Qwen3 artifacts when available.
+
+    Stats from --show-stats are written to stderr per Phase 1.7 spec, so the
+    smoke check inspects stderr for the basic stats fields and stdout for the
+    generated text.
+    """
     import os
 
     stdout = StringIO()
+    stderr = StringIO()
     model_path = os.environ.get("QWEN_MODEL_PATH", "./models/qwen3-0.6b")
 
     exit_code = main(
@@ -420,9 +653,10 @@ def test_qwen3_cli_chat_smoke():
             "--show-stats",
         ],
         stdout=stdout,
+        stderr=stderr,
     )
 
     assert exit_code == 0
-    output = stdout.getvalue()
-    assert "prompt_tokens" in output
-    assert "stop_reason" in output
+    err = stderr.getvalue()
+    assert "prompt_tokens" in err
+    assert "stop_reason" in err

@@ -31,7 +31,23 @@ from pathlib import Path
 from typing import TextIO
 
 from tiny_duo_infer.engine import Engine
-from tiny_duo_infer.generation import ChatMessage, GenerationRequest
+from tiny_duo_infer.generation import (
+    ChatMessage,
+    GenerationRequest,
+    GenerationResponse,
+    GenerationStats,
+)
+
+# Keep the CLI's policy choice list in lockstep with the spec and with the
+# `ContextPolicy` literal in `tiny_duo_infer.generation`. argparse uses this
+# tuple for both the `choices=` validation and the `--help` listing.
+_CONTEXT_POLICY_CHOICES: tuple[str, ...] = (
+    "allow_context_stop",
+    "reject",
+    "truncate_left",
+    "truncate_right",
+    "reserve_generation",
+)
 
 
 def main(
@@ -39,6 +55,7 @@ def main(
     *,
     engine_cls: type[Engine] = Engine,
     stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
 ) -> int:
     """
     Parse CLI arguments and run local text generation.
@@ -48,7 +65,9 @@ def main(
                     uses `sys.argv[1:]`, matching normal CLI execution.
         engine_cls: Engine-compatible class, injectable for tests. Runtime uses
                     `Engine.from_model_path()` to load local model artifacts.
-        stdout:     text stream that receives generated text and optional stats.
+        stdout:     text stream that receives generated text only. Stats from
+                    `--show-stats` go to `stderr` so stdout stays pipe-friendly.
+        stderr:     text stream that receives the `--show-stats` block.
 
     Returns:
         Process exit code. `0` means generation completed without an exception.
@@ -76,6 +95,7 @@ def main(
                 top_p=args.top_p,
                 stop=args.stop or [],
                 seed=args.seed,
+                context_policy=args.context_policy,
             )
         else:
             request = GenerationRequest(
@@ -87,6 +107,7 @@ def main(
                 top_p=args.top_p,
                 stop=args.stop or [],
                 seed=args.seed,
+                context_policy=args.context_policy,
             )
     except ValueError as exc:
         parser.error(str(exc))
@@ -100,14 +121,60 @@ def main(
     print(response.text, end="", file=stdout, flush=True)
 
     if args.show_stats:
-        print(
-            f"\nprompt_tokens={response.prompt_tokens}"
-            f" generated_tokens={response.generated_tokens}"
-            f" stop_reason={response.stop_reason}",
-            file=stdout,
-        )
+        _write_stats_block(response, stderr)
 
     return 0
+
+
+def _write_stats_block(response: GenerationResponse, stderr: TextIO) -> None:
+    """Render the `--show-stats` block to `stderr` per the Phase 1.7 spec.
+
+    Generated text remains on stdout. Stats go to stderr so callers can pipe
+    `tiny_duo_infer.cli ... | downstream` without the stats interleaving.
+
+    When `response.stats` is populated (real engine path after Phase 1.7-T03),
+    the full 14-field block is emitted, one `key=value` per line. When stats
+    are absent (legacy fakes, unit-test stubs), a short fallback line is
+    written so callers can still see prompt/generated/stop fields.
+    """
+    stats = response.stats
+    if stats is None:
+        # Backward-compat fallback: no per-request metrics surface available.
+        # Match the Phase 1.6 single-line shape so older shell helpers keep
+        # parsing the basic fields.
+        print(
+            f"prompt_tokens={response.prompt_tokens}"
+            f" generated_tokens={response.generated_tokens}"
+            f" stop_reason={response.stop_reason}",
+            file=stderr,
+        )
+        return
+
+    # Field order follows the Phase 1.7 spec "CLI" section. Each field is on
+    # its own line so individual values can be grepped or parsed without
+    # depending on whitespace within a long line.
+    lines = _format_stats_lines(stats)
+    print("\n".join(lines), file=stderr)
+
+
+def _format_stats_lines(stats: GenerationStats) -> list[str]:
+    """Return the ordered `key=value` lines that make up the stats block."""
+    return [
+        f"prompt_tokens={stats.prompt_tokens}",
+        f"generated_tokens={stats.generated_tokens}",
+        f"stop_reason={stats.stop_reason}",
+        f"prefill_ms={stats.prefill_ms:.2f}",
+        f"time_to_first_token_ms={stats.time_to_first_token_ms:.2f}",
+        f"decode_ms={stats.decode_ms:.2f}",
+        f"total_ms={stats.total_ms:.2f}",
+        f"decode_tokens_per_sec={stats.decode_tokens_per_sec:.2f}",
+        f"kv_cache_allocated_bytes={stats.kv_cache_allocated_bytes}",
+        f"kv_cache_active_bytes={stats.kv_cache_active_bytes}",
+        f"context_policy={stats.context_policy}",
+        f"original_prompt_tokens={stats.original_prompt_tokens}",
+        f"accepted_prompt_tokens={stats.accepted_prompt_tokens}",
+        f"truncated_prompt_tokens={stats.truncated_prompt_tokens}",
+    ]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -190,11 +257,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Seed for deterministic probabilistic sampling.",
     )
     parser.add_argument(
+        "--context-policy",
+        choices=_CONTEXT_POLICY_CHOICES,
+        default="allow_context_stop",
+        help=(
+            "Per-request context-budget policy applied before prefill. "
+            "allow_context_stop preserves the Phase 1.6 behavior; "
+            "reject fails when prompt + max_new_tokens > max_seq_len; "
+            "truncate_left/right drop earliest/latest prompt tokens to fit; "
+            "reserve_generation is truncate_left framed for chat prompts. "
+            "Default: allow_context_stop."
+        ),
+    )
+    parser.add_argument(
         "--show-stats",
         action="store_true",
         help=(
-            "After generation, print a stats line: "
-            "prompt_tokens=N generated_tokens=N stop_reason=REASON."
+            "After generation, write a stats block to stderr (so stdout "
+            "still contains only the generated text). The block reports "
+            "timing, token accounting, KV-cache memory, and the applied "
+            "context policy, one key=value per line."
         ),
     )
     return parser
