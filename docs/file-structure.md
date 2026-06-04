@@ -19,13 +19,15 @@
 
 | File | Purpose |
 |---|---|
-| `engine.py` | `Engine`: `from_model_path()`, `prefill()`, `generate()` — full generation pipeline |
+| `engine.py` | `Engine`: `from_model_path()`, `prefill()`, `generate()` — full generation pipeline; instruments timing and KV bytes; attaches `GenerationStats` to every response |
 | `cache.py` | `KVCache`: pre-allocated buffers, `update()`/`advance()` write-commit protocol |
 | `sampling.py` | `greedy()`, `sample()` — temperature, top-k, top-p token selection |
-| `cli.py` | argparse CLI wrapper over `Engine` |
+| `cli.py` | argparse CLI wrapper over `Engine`; `--show-stats` writes 14-field block to stderr; `--context-policy` forwarded to `GenerationRequest` |
 | `config.py` | `ModelConfig` dataclass, `load_config()` from `config.json` |
-| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` — validated request types and response metadata |
+| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse`, `GenerationStats` — validated request/response types, `ContextPolicy` literal, `kv_cache_bytes()` formula |
+| `context_policy.py` | `apply_context_policy()` — enforces accept/truncate/reject before prefill; `ContextBudgetError`, `ContextPolicyOutcome` |
 | `prompt.py` | `format_chat_prompt()` — ChatML template for Qwen3; raises `ValueError` for Llama (base model) |
+| `profiling.py` | `percentile()`, `aggregate_runs()`, `run_profile()` — importable profiling logic used by `scripts/profile_generation.py` |
 
 ### `models/`
 
@@ -62,7 +64,8 @@
 
 | File | Purpose |
 |---|---|
-| `api.py` | FastAPI app: `GET /health`, `POST /generate` (JSON), `POST /generate/stream` (NDJSON); `create_app(engine)` factory; CLI entrypoint via `__main__` |
+| `worker.py` | `InferenceWorker`: runs engine on a dedicated thread for MLX GPU stream affinity; `submit_generate()` / `submit_stream()` |
+| `api.py` | FastAPI app: `GET /health`, `POST /generate` (JSON + stats), `POST /generate/stream` (NDJSON + final stats); `context_policy` in request body; `create_app(engine)` factory; CLI entrypoint via `__main__` |
 
 ### `backends/`
 
@@ -88,10 +91,12 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `test_model.py` | Module/Linear/Embedding, LlamaBlock, LlamaModel forward |
 | `test_sampling.py` | `greedy()`, `sample()` edge cases |
 | `test_engine.py` | Prefill/decode state transitions, eval placement, `max_new_tokens` |
-| `test_cli.py` | CLI args, fake-engine integration |
-| `test_generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse` validation |
+| `test_cli.py` | CLI args, fake-engine integration, `--show-stats` stderr block, `--context-policy` forwarding |
+| `test_generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse`, `GenerationStats` validation; `kv_cache_bytes()` formula |
+| `test_context_policy.py` | `apply_context_policy()` — all five policies, both spec preconditions, outcome accounting invariants |
 | `test_prompt.py` | `format_chat_prompt()` ChatML output, Llama rejection, unsupported model, empty messages |
-| `test_serving.py` | HTTP server endpoints, NDJSON streaming, busy response, validation |
+| `test_serving.py` | HTTP server endpoints, NDJSON streaming, busy response, validation; stats fields, `context_policy` forwarding |
+| `test_profiling.py` | `percentile()`, `aggregate_runs()`, prompt loading, CLI validation, JSON schema shape |
 
 ---
 
@@ -100,6 +105,7 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | File | Purpose |
 |---|---|
 | `benchmark.py` | Tokens/sec throughput, KV cache memory |
+| `profile_generation.py` | Repeatable generation profiling: latency (TTFT, prefill, decode, total), throughput, KV-cache memory; supports `--prompt`, `--prompt-file`, `--runs`, `--warmup-runs`, `--json` |
 
 ---
 
@@ -118,6 +124,8 @@ All use `TINY_CONFIG` (2 layers, d_model=64). `@pytest.mark.slow` tests skipped 
 | `phases/phase-1.5-taskboard.md` | Phase 1.5 task tracking, ownership, status, review gates |
 | `phases/phase-1.6-generation-serving.md` | Phase 1.6 implementation contract: generation UX and single-request serving |
 | `phases/phase-1.6-taskboard.md` | Phase 1.6 task tracking, ownership, status, review gates |
+| `phases/phase-1.7-observability.md` | Phase 1.7 implementation contract: observability, timing, KV-cache memory, context-budget policy |
+| `phases/phase-1.7-taskboard.md` | Phase 1.7 task tracking, ownership, status, review gates |
 
 ---
 

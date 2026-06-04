@@ -17,6 +17,7 @@ UX, local serving, then a PyTorch/CUDA backend.
 | Phase 1 | Single-user inference on Apple Silicon using MLX | Done |
 | Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
 | Phase 1.6 | Refine CLI and support HTTP serving | Done |
+| Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | In progress |
 | Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Not started |
 | Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
 
@@ -66,7 +67,8 @@ Additional flags (all models):
 |---|---|
 | `--stop TEXT` | Stop when TEXT appears in output (repeatable). |
 | `--seed N` | Seed for deterministic probabilistic sampling. |
-| `--show-stats` | Print `prompt_tokens`, `generated_tokens`, and `stop_reason` after generation. |
+| `--show-stats` | Write a 14-field timing/memory/context stats block to stderr after generation. Generated text stays on stdout. |
+| `--context-policy POLICY` | How to handle prompts that exceed the context budget. Choices: `allow_context_stop` (default), `reject`, `truncate_left`, `truncate_right`, `reserve_generation`. |
 
 Llama-3.2-1B is a base completion model. Chat mode (`--chat` or `--message`)
 raises an error for Llama because it has no chat template.
@@ -86,8 +88,12 @@ Full-response generation (JSON):
 ```bash
 curl -s http://127.0.0.1:8000/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0}'
+  -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0, "context_policy": "allow_context_stop"}'
 ```
+
+The response JSON includes a `stats` field with the full 19-field stats object
+(timing, token-budget, KV-cache memory, context policy). The CLI `--show-stats`
+prints a 14-field summary to stderr; HTTP exposes all fields.
 
 Streaming generation (NDJSON, one JSON object per line):
 
@@ -97,6 +103,10 @@ curl -s http://127.0.0.1:8000/generate/stream \
   -d '{"prompt": "Once upon a time", "max_new_tokens": 32}'
 ```
 
+Fragment chunks carry `{"done": false, "text": "..."}`. The final chunk is
+`{"done": true, "text": "...", "prompt_tokens": N, "generated_tokens": N,
+"stop_reason": "...", "stats": {...}}`.
+
 Server status:
 
 ```bash
@@ -105,6 +115,33 @@ curl http://127.0.0.1:8000/health
 
 The server handles one request at a time. Concurrent requests receive a 503
 "server busy" response.
+
+## Profiling
+
+Measure latency, throughput, and KV-cache memory across prompt sets:
+
+```bash
+uv run python scripts/profile_generation.py \
+  --model-path ./models/qwen3-0.6b \
+  --max-seq-len 512 \
+  --max-new-tokens 64 \
+  --runs 5 \
+  --warmup-runs 1
+```
+
+Key flags:
+
+| Flag | Description |
+|---|---|
+| `--prompt TEXT` | Add a prompt to the set (repeatable). Uses built-in prompts if omitted. |
+| `--prompt-file PATH` | Load prompts from a file (one per line). |
+| `--runs N` | Number of timed runs per prompt (default 3). |
+| `--warmup-runs N` | Warmup runs to exclude from summary (default 1). |
+| `--context-policy POLICY` | Context-budget policy applied to every request. |
+| `--json` | Emit a machine-readable JSON report to stdout (silences progress output). |
+
+The summary reports `min`, `p50`, `p95`, and `max` for TTFT, decode
+throughput, and KV-cache active memory.
 
 ## Development Checks
 

@@ -28,14 +28,16 @@ prefer readable, teachable code over compact or highly optimized code.
 
 ## Roadmap
 
-The project follows three major phases, with Phase 1.5 and Phase 1.6 inserted
-after Phase 1 before backend portability:
+The project follows three major phases, with Phase 1.5, Phase 1.6, and Phase
+1.7 inserted after Phase 1 before backend portability:
 
 1. Phase 1: single-user local inference on Apple Silicon using MLX.
 2. Phase 1.5: add `Qwen/Qwen3-0.6B` support on the same MLX backend.
 3. Phase 1.6: refine generation UX and add single-request local HTTP serving.
-4. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
-5. Phase 3: add multi-user serving concepts such as queues, scheduling,
+4. Phase 1.7: engine observability — per-request timing, KV-cache memory
+   accounting, and context-budget policy enforcement.
+5. Phase 2: add Nvidia GPU support through a PyTorch/CUDA backend.
+6. Phase 3: add multi-user serving concepts such as queues, scheduling,
    batching, streaming, and PagedAttention-style KV-cache management.
 
 Qwen3 support is useful for learning model-family portability before adding a
@@ -101,6 +103,15 @@ request at a time, but adds structured request/response metadata, stop strings,
 token accounting, optional chat prompt formatting, refined CLI flags, and a
 single-request HTTP API. It does not introduce batching, PagedAttention, or a
 PyTorch/CUDA backend.
+
+Phase 1.7 adds observability to the existing MLX engine. The source-of-truth
+contract is `docs/phases/phase-1.7-observability.md`. This phase instruments
+the engine with per-request timing (TTFT, prefill, decode, total), KV-cache
+memory accounting, and a `context_policy` parameter that controls how prompts
+exceeding the context budget are handled. Stats are exposed in `GenerationStats`,
+surfaced in the CLI via `--show-stats` (to stderr), in HTTP JSON responses, and
+in the final streaming chunk. A repeatable profiling script
+(`scripts/profile_generation.py`) reports min/p50/p95/max summaries.
 
 Tokenizer plan:
 
@@ -474,6 +485,8 @@ Important docs:
 - `docs/phases/phase-1.5-taskboard.md`: phase-1.5 task tracking and review state
 - `docs/phases/phase-1.6-generation-serving.md`: phase-1.6 generation UX and serving contract
 - `docs/phases/phase-1.6-taskboard.md`: phase-1.6 task tracking and review state
+- `docs/phases/phase-1.7-observability.md`: phase-1.7 observability and context-budget policy contract
+- `docs/phases/phase-1.7-taskboard.md`: phase-1.7 task tracking and review state
 - `docs/adr/*.md`: durable decisions
 
 Recommended next documentation steps before implementation:
@@ -523,6 +536,7 @@ Unless changed by a future ADR, these decisions are settled:
 - MLX first
 - Qwen3 model-family support before backend expansion
 - Phase 1.6 before backend expansion while the NVIDIA development environment is unavailable
+- Phase 1.7 observability before backend expansion: measurement baseline needed for quantization and batching experiments
 - PyTorch/CUDA second
 - multi-user serving third
 - learning clarity over raw performance

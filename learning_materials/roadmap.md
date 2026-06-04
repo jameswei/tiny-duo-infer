@@ -1,15 +1,18 @@
 # Learning Roadmap
 
-This document is a guided reading order for the completed Phase 1 and Phase 1.5
-engine. Use it to study how local Llama inference works first, then how the
-same engine was extended to Qwen3-0.6B without changing the prefill/decode
-control flow.
+This document is a guided reading order for the completed Phase 1, Phase 1.5,
+Phase 1.6, and Phase 1.7 engine. Use it to study how local Llama inference
+works first, then how the same engine was extended to Qwen3-0.6B, then how
+generation UX and HTTP serving were added, and finally how the engine was
+instrumented with observability.
 
 Phase 1 is intentionally learning-first: the goal is not to hide inference
 behind a library, but to make the control flow, tensor shapes, KV-cache writes,
 and sampling choices visible. Phase 1.5 adds a second model family so the next
 lesson is model portability: which pieces are engine-generic, and which pieces
-belong to a specific model architecture.
+belong to a specific model architecture. Phase 1.6 adds request boundaries and
+serving structure. Phase 1.7 adds observability: how to measure what the engine
+is actually doing.
 
 ## How To Read
 
@@ -434,6 +437,8 @@ Learn:
 - Why Llama-3.2-1B at `T=1024` uses about 32 MB of KV cache in bfloat16.
 - Why Qwen3-0.6B uses a different KV memory slope:
   `L=28`, `Hkv=8`, `Dh=128`, so `T=1024` is about 112 MB in bfloat16.
+- How `generation.kv_cache_bytes()` is the canonical formula — `benchmark.py`
+  imports it rather than duplicating the math.
 
 Try:
 
@@ -442,7 +447,98 @@ Try:
 - Run Qwen3 benchmark if artifacts exist:
   `uv run python scripts/benchmark.py --model-path models/qwen3-0.6b --n-tokens 20 --max-seq-len 256 --show-output`.
 
-### 19. Phase Handoffs And Real-Model Smoke
+### 19. Generation Stats And Observability
+
+Read:
+
+- `tiny_duo_infer/generation.py` — `GenerationStats` dataclass, `kv_cache_bytes()`
+- `tiny_duo_infer/engine.py` — timing instrumentation with `perf_counter()`
+- `tests/test_generation.py` — `GenerationStats` invariant tests
+- `tests/test_engine.py` — stats populated on every stop reason
+
+Learn:
+
+- What `GenerationStats` captures: context-policy accounting, token counts,
+  timing (prompt_prepare, prefill, TTFT, decode, total), decode throughput,
+  KV bytes (allocated and active), and sequence lengths.
+- Why `prompt_tokens == accepted_prompt_tokens` is an invariant enforced at
+  construction (API stability: callers can rely on this equality).
+- Why `active_seq_len == accepted_prompt_tokens + generated_tokens`.
+- How timing is measured: `time.perf_counter()` at engine boundaries, not
+  inside layers.
+- What TTFT means and why it is not the same as prefill latency.
+- Why `decode_step_ms` is left empty by default (profiling-only detail that
+  should not appear in public responses).
+- How `kv_cache_active_bytes` differs from `kv_cache_allocated_bytes`.
+- Why KV bytes are computed from `cache._keys[0].dtype.size` at runtime rather
+  than assumed to be float32.
+
+Try:
+
+- Run a CLI call with `--show-stats` and read each of the 14 output lines.
+- Compute KV active bytes by hand for your prompt length and compare.
+- Explain why TTFT ≥ prefill_ms.
+
+### 20. Context-Budget Policy
+
+Read:
+
+- `tiny_duo_infer/context_policy.py` — `apply_context_policy()`, `ContextPolicyOutcome`
+- `tiny_duo_infer/generation.py` — `ContextPolicy` literal, `_VALID_CONTEXT_POLICIES`
+- `tests/test_context_policy.py` — all five policies, precondition checks
+
+Learn:
+
+- The five policies: `allow_context_stop`, `reject`, `truncate_left`,
+  `truncate_right`, `reserve_generation`.
+- What `ContextPolicyOutcome` records: original vs. accepted token counts,
+  truncated and rejected counts.
+- Why both spec preconditions are universal (all policies):
+  (a) `allow_context_stop` fails when `original_prompt_tokens > max_seq_len`
+  (would never generate a single token); (b) every policy rejects
+  `max_new_tokens > max_seq_len` regardless of policy.
+- How `reserve_generation` differs from `truncate_left`: it truncates the
+  prompt to `max_seq_len - max_new_tokens` to guarantee generation headroom.
+- Why context-policy enforcement happens before prefill, not during decode.
+
+Try:
+
+- For `max_seq_len=16`, `max_new_tokens=4`, and a 20-token prompt, trace each
+  policy outcome by hand.
+- Run `uv run pytest tests/test_context_policy.py -v` to see all cases.
+
+### 21. Profiling Script
+
+Read:
+
+- `scripts/profile_generation.py`
+- `tiny_duo_infer/profiling.py`
+- `tests/test_profiling.py`
+
+Learn:
+
+- How `run_profile()` wraps the engine, runs warmup rounds, and
+  collects timed `GenerationStats` objects.
+- Why warmup rounds are excluded from summary statistics (cold-start bias:
+  first run includes MLX lazy-compilation and kernel-cache warm-up effects;
+  the model is already loaded before `run_profile()` is called).
+- How `percentile()` uses linear interpolation (numpy-default convention).
+- What `aggregate_runs()` returns: `min`, `p50`, `p95`, `max` for TTFT,
+  decode throughput, and KV-cache active memory.
+- Why `--json` emits a stable schema (versioned with `schema_version=1`) and
+  silences progress output.
+- Why `decode_step_ms` is omitted from per-run JSON (T03 leaves it empty in
+  non-profiling paths).
+- The stdout/stderr split: `--json` sends JSON to stdout; human mode sends the
+  report to stdout and progress lines to stderr.
+
+Try:
+
+- Run `uv run python scripts/profile_generation.py --help`.
+- Run with `--json` against a local model and inspect the schema.
+- Compare p50 TTFT vs. p50 total latency for a short prompt.
+
+### 22. Phase Handoffs And Real-Model Smoke
 
 Read:
 
@@ -450,6 +546,8 @@ Read:
 - `docs/phases/phase-1-taskboard.md`
 - `docs/phases/phase-1.5-qwen3-mlx.md`
 - `docs/phases/phase-1.5-taskboard.md`
+- `docs/phases/phase-1.7-observability.md`
+- `docs/phases/phase-1.7-taskboard.md`
 
 Learn:
 
@@ -459,6 +557,7 @@ Learn:
 - Why semantic quality is not the smoke-test gate.
 - How the real-model smoke exposed the bfloat16 loader issue.
 - How Phase 1.5 verified model-family portability before backend portability.
+- What Phase 1.7 added as a measurement baseline for future phases.
 - What remains out of scope until later phases.
 
 Try:
@@ -523,10 +622,17 @@ generated token
 16. `tiny_duo_infer/sampling.py`
 17. `tiny_duo_infer/engine.py`
 18. `tiny_duo_infer/cli.py`
-19. `scripts/benchmark.py`
-20. Matching `tests/` files in the same order
-21. `docs/phases/phase-1-handoff.md`
-22. `docs/phases/phase-1.5-qwen3-mlx.md`
+19. `tiny_duo_infer/generation.py`
+20. `tiny_duo_infer/context_policy.py`
+21. `tiny_duo_infer/profiling.py`
+22. `tiny_duo_infer/serving/worker.py`
+23. `tiny_duo_infer/serving/api.py`
+24. `scripts/benchmark.py`
+25. `scripts/profile_generation.py`
+26. Matching `tests/` files in the same order
+27. `docs/phases/phase-1-handoff.md`
+28. `docs/phases/phase-1.5-qwen3-mlx.md`
+29. `docs/phases/phase-1.7-observability.md`
 
 ## What To Write Down
 

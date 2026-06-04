@@ -103,6 +103,10 @@ tiny_duo_infer/
   sampling.py         — greedy, temperature, top-k, top-p
   cli.py              — local text-generation CLI
   config.py           — parse config.json into a model config dataclass
+  generation.py       — ChatMessage, GenerationRequest/Response/Stats, ContextPolicy, kv_cache_bytes()
+  context_policy.py   — apply_context_policy(): accept/truncate/reject logic, ContextPolicyOutcome
+  prompt.py           — format_chat_prompt(): ChatML template for Qwen3
+  profiling.py        — profiling helpers: percentile, aggregate_runs, run_profile
 
   backends/
     __init__.py
@@ -136,13 +140,15 @@ tiny_duo_infer/
 
   serving/            — Phase 1.6 single-request HTTP; Phase 3 scheduling
     __init__.py
+    worker.py         — InferenceWorker: engine on dedicated thread (MLX GPU affinity)
     request.py        — Request dataclass, state machine
     scheduler.py      — FIFO → continuous batching (Phase 3)
     block_manager.py  — PagedAttention KV page pool (Phase 3)
     api.py            — FastAPI HTTP server
 
 scripts/
-  benchmark.py        — tokens/sec and KV cache memory measurement
+  benchmark.py          — tokens/sec and KV cache memory measurement
+  profile_generation.py — repeatable generation profiling with latency/throughput/memory summaries
 
 tests/
   conftest.py         — TINY_CONFIG shared fixture
@@ -153,6 +159,8 @@ tests/
   test_cache.py
   test_sampling.py
   test_engine.py
+  test_context_policy.py
+  test_profiling.py
 
 docs/
   architecture.md     — this file
@@ -162,6 +170,8 @@ docs/
     phase-1-mlx-single-user.md
     phase-1.5-qwen3-mlx.md
     phase-1.5-taskboard.md
+    phase-1.7-observability.md
+    phase-1.7-taskboard.md
   adr/
 ```
 
@@ -169,11 +179,15 @@ docs/
 
 | File | Responsibility |
 |---|---|
-| `engine.py` | Public `Engine.from_model_path()` API; orchestrates prefill → decode loop; owns `KVCache` lifecycle per request |
+| `engine.py` | Public `Engine.from_model_path()` API; orchestrates prefill → decode loop; instruments timing and KV bytes; attaches `GenerationStats` to every response |
 | `cache.py` | Pre-allocated K/V buffers; `update()` writes per layer; `advance()` commits one token step |
 | `sampling.py` | Stateless sampling functions; operates on `(vocab_size,)` logits |
-| `cli.py` | Thin CLI wrapper over `Engine` |
+| `cli.py` | Thin CLI wrapper over `Engine`; `--show-stats` writes 14-field block to stderr; `--context-policy` forwarded to `GenerationRequest` |
 | `config.py` | Reads `config.json`; returns a typed config object used by model and cache constructors |
+| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse`, `GenerationStats`; `ContextPolicy` literal + `_VALID_CONTEXT_POLICIES`; `kv_cache_bytes()` formula |
+| `context_policy.py` | `apply_context_policy()`: enforces accept/truncate/reject before prefill; `ContextBudgetError`, `ContextPolicyOutcome` |
+| `prompt.py` | `format_chat_prompt()`; ChatML template for Qwen3; raises `ValueError` for Llama |
+| `profiling.py` | `percentile()`, `aggregate_runs()`, `run_profile()`; used by `scripts/profile_generation.py` |
 | `backends/protocol.py` | `Backend` typing Protocol; defines Tier-1 op signatures |
 | `models/base.py` | `Module` ABC with `load_weights(flat_dict)`; `Linear`, `Embedding` |
 | `models/llama.py` | `LlamaBlock`, `LlamaModel`; assembles layers into the full model |
@@ -183,6 +197,8 @@ docs/
 | `weights/llama_converter.py` | HF key → project key mapping; tied embedding handling; shape assertions |
 | `weights/qwen3_converter.py` | Qwen3 HF key → project key mapping; Q/K norm and projection shape assertions |
 | `tokenizer/loader.py` | `Tokenizer.from_pretrained()`; wraps `tokenizers` package |
+| `serving/worker.py` | `InferenceWorker`: runs engine on a dedicated thread for MLX GPU stream affinity; `submit_generate()` / `submit_stream()` |
+| `serving/api.py` | FastAPI app: `/health`, `/generate` (JSON + stats), `/generate/stream` (NDJSON + final stats); `context_policy` in request body |
 
 ---
 
@@ -305,8 +321,9 @@ Benefits over Phase 1 design:
 Phase 1 targets `meta-llama/Llama-3.2-1B` (base model). Phase 1.5 adds
 `Qwen/Qwen3-0.6B` on the same MLX backend to exercise model-family
 portability before Phase 2 introduces backend portability. Phase 1.6 adds
-generation UX and single-request local serving while the CUDA development
-environment is deferred.
+generation UX and single-request local serving. Phase 1.7 adds observability:
+`GenerationStats` with per-request timing, KV-cache memory accounting, and
+context-budget policy enforcement via `apply_context_policy()`.
 
 ### Llama-3.2-1B
 
@@ -390,17 +407,18 @@ vocab_size: int
 | Sampling | greedy → top-k/p/temp | same | same | same |
 | Model | Llama-3.2-1B (base) | + Qwen3-0.6B | same supported models | same supported models |
 
-Phase 1.6 fits between Phase 1.5 and Phase 2:
+Phase 1.6 and Phase 1.7 fit between Phase 1.5 and Phase 2:
 
-| Concern | Phase 1.6 |
-|---|---|
-| Backend | MLX (direct) |
-| Concurrency | one active request per process |
-| KV cache | pre-allocated static |
-| Scheduling | none; lock or busy response only |
-| Serving | refined CLI + single-request HTTP API |
-| Streaming | expose existing generation iterator |
-| Prompting | plain prompt + simple chat formatting |
+| Concern | Phase 1.6 | Phase 1.7 |
+|---|---|---|
+| Backend | MLX (direct) | MLX (direct) |
+| Concurrency | one active request per process | same |
+| KV cache | pre-allocated static | same + KV bytes accounting |
+| Scheduling | none; lock or busy response only | same |
+| Serving | refined CLI + single-request HTTP API | same + stats and context_policy |
+| Streaming | expose existing generation iterator | same + stats on final chunk |
+| Prompting | plain prompt + simple chat formatting | same |
+| Observability | none | timing (TTFT, prefill, decode, total), KV memory, context-budget policy |
 
 ---
 
