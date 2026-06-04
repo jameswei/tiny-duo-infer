@@ -169,6 +169,29 @@ def test_generation_request_default_values():
     assert req.stop == []
     assert req.seed is None
     assert req.chat is False
+    assert req.context_policy == "allow_context_stop"
+
+
+# ---------------------------------------------------------------------------
+# GenerationRequest — context policy
+# ---------------------------------------------------------------------------
+
+
+def test_generation_request_accepts_all_context_policies():
+    for policy in (
+        "allow_context_stop",
+        "reject",
+        "truncate_left",
+        "truncate_right",
+        "reserve_generation",
+    ):
+        req = GenerationRequest(prompt="hi", context_policy=policy)
+        assert req.context_policy == policy
+
+
+def test_generation_request_rejects_unknown_context_policy():
+    with pytest.raises(ValueError, match="context_policy must be one of"):
+        GenerationRequest(prompt="hi", context_policy="not_a_policy")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

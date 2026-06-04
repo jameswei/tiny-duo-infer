@@ -87,6 +87,7 @@ class GenerationRequest:
     stop: list[str] = field(default_factory=list)
     seed: int | None = None
     chat: bool = False
+    context_policy: ContextPolicy = "allow_context_stop"
 
     def __post_init__(self) -> None:
         if self.prompt is None and self.messages is None:
@@ -125,6 +126,12 @@ class GenerationRequest:
         for s in self.stop:
             if not s:
                 raise ValueError("Each stop string must be non-empty.")
+
+        if self.context_policy not in _VALID_CONTEXT_POLICIES:
+            raise ValueError(
+                f"context_policy must be one of {sorted(_VALID_CONTEXT_POLICIES)!r},"
+                f" got {self.context_policy!r}."
+            )
 
 
 @dataclass
