@@ -51,39 +51,7 @@ import time
 from pathlib import Path
 
 from tiny_duo_infer.engine import Engine
-
-
-def kv_cache_bytes(
-    n_layers: int,
-    n_kv_heads: int,
-    seq_len: int,
-    head_dim: int,
-    bytes_per_element: int = 2,
-) -> int:
-    """
-    Compute the peak KV cache memory in bytes for one generation request.
-
-    Formula: 2 × n_layers × n_kv_heads × seq_len × head_dim × bytes_per_element
-
-    The leading factor of 2 accounts for both the K buffer and the V buffer.
-    Each layer maintains one pair. All positions up to seq_len are pre-allocated
-    even if fewer tokens are actually generated.
-
-    For Llama-3.2-1B in bfloat16:
-        2 × 16 × 8 × T × 64 × 2 = 32,768 × T bytes
-        At T=1024: 33,554,432 bytes ≈ 32 MB
-
-    Args:
-        n_layers:          number of transformer layers (L).
-        n_kv_heads:        number of KV attention heads (Hkv).
-        seq_len:           total sequence length T (prompt + generated).
-        head_dim:          per-head dimension (Dh = d_model // n_heads).
-        bytes_per_element: bytes per scalar. 2 for bfloat16, 4 for float32.
-
-    Returns:
-        Total KV cache size in bytes.
-    """
-    return 2 * n_layers * n_kv_heads * seq_len * head_dim * bytes_per_element
+from tiny_duo_infer.generation import kv_cache_bytes
 
 
 def main() -> None:
@@ -123,7 +91,13 @@ def main() -> None:
     )
     print(f"formula: 2 × L × Hkv × T × Dh × 2 bytes")
     for seq_len in ref_lengths:
-        nbytes = kv_cache_bytes(cfg.n_layers, cfg.n_kv_heads, seq_len, cfg.head_dim)
+        # benchmark.py historically reports bfloat16 reference numbers in the
+        # printed table; the canonical helper defaults to fp32 (4 bytes), so
+        # pass bytes_per_element=2 explicitly to preserve output stability.
+        nbytes = kv_cache_bytes(
+            cfg.n_layers, cfg.n_kv_heads, seq_len, cfg.head_dim,
+            bytes_per_element=2,
+        )
         print(f"  T={seq_len:5d}: {nbytes:>15,} bytes  ({nbytes / 1024 ** 2:6.1f} MB)")
 
     if args.show_output:
