@@ -21,6 +21,36 @@ _VALID_ROLES: frozenset[str] = frozenset({"system", "user", "assistant"})
 
 StopReason = Literal["eos", "max_new_tokens", "stop_string", "context_length"]
 
+ContextPolicy = Literal[
+    "allow_context_stop",
+    "reject",
+    "truncate_left",
+    "truncate_right",
+    "reserve_generation",
+]
+
+_VALID_CONTEXT_POLICIES: frozenset[str] = frozenset({
+    "allow_context_stop",
+    "reject",
+    "truncate_left",
+    "truncate_right",
+    "reserve_generation",
+})
+
+
+def kv_cache_bytes(
+    n_layers: int,
+    n_kv_heads: int,
+    seq_len: int,
+    head_dim: int,
+    bytes_per_element: int = 4,
+) -> int:
+    """Compute KV-cache memory in bytes for one sequence length.
+
+    Formula: 2 (K+V) * n_layers * n_kv_heads * seq_len * head_dim * bytes_per_element
+    """
+    return 2 * n_layers * n_kv_heads * seq_len * head_dim * bytes_per_element
+
 
 @dataclass
 class ChatMessage:
@@ -98,6 +128,64 @@ class GenerationRequest:
 
 
 @dataclass
+class GenerationStats:
+    """Per-request generation metrics: timing, token accounting, and KV-cache memory.
+
+    Invariants enforced at construction:
+      - prompt_tokens == accepted_prompt_tokens
+      - active_seq_len == accepted_prompt_tokens + generated_tokens
+    """
+
+    # Context policy applied and token-budget accounting
+    context_policy: str
+    original_prompt_tokens: int
+    accepted_prompt_tokens: int
+    truncated_prompt_tokens: int
+    rejected_prompt_tokens: int
+
+    # Mirrors GenerationResponse fields for standalone readability
+    prompt_tokens: int
+    generated_tokens: int
+    stop_reason: str
+
+    # Timing (milliseconds)
+    prompt_prepare_ms: float
+    prefill_ms: float
+    time_to_first_token_ms: float
+    decode_ms: float
+    total_ms: float
+    decode_tokens_per_sec: float
+
+    # KV-cache memory
+    kv_cache_allocated_bytes: int
+    kv_cache_active_bytes: int
+    max_seq_len: int
+    active_seq_len: int
+
+    # Optional profiling detail — omitted from HTTP responses by default
+    decode_step_ms: list[float] = field(default_factory=list)
+    model_type: str = ""
+
+    def __post_init__(self) -> None:
+        if self.context_policy not in _VALID_CONTEXT_POLICIES:
+            raise ValueError(
+                f"context_policy must be one of {sorted(_VALID_CONTEXT_POLICIES)!r},"
+                f" got {self.context_policy!r}."
+            )
+        if self.prompt_tokens != self.accepted_prompt_tokens:
+            raise ValueError(
+                f"prompt_tokens ({self.prompt_tokens}) must equal"
+                f" accepted_prompt_tokens ({self.accepted_prompt_tokens})."
+            )
+        expected_active = self.accepted_prompt_tokens + self.generated_tokens
+        if self.active_seq_len != expected_active:
+            raise ValueError(
+                f"active_seq_len ({self.active_seq_len}) must equal"
+                f" accepted_prompt_tokens + generated_tokens ({expected_active})."
+            )
+
+
+@dataclass
 class GenerationResponse:
     """Completed generation result with token accounting and stop metadata."""
 
@@ -105,3 +193,4 @@ class GenerationResponse:
     prompt_tokens: int
     generated_tokens: int
     stop_reason: StopReason
+    stats: GenerationStats | None = None
