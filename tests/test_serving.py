@@ -7,7 +7,7 @@ All unit tests use _FakeEngine so no model artifacts are required.
 Streaming format: one NDJSON line per event.
   Fragment: {"done": false, "text": "<fragment>"}
   Final:    {"done": true, "text": "<full trimmed text>", "prompt_tokens": N,
-             "generated_tokens": N, "stop_reason": "<reason>"}
+             "generated_tokens": N, "stop_reason": "<reason>", "stats": {…}|null}
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import tiny_duo_infer.serving.api as api_module
-from tiny_duo_infer.generation import GenerationRequest, GenerationResponse
+from tiny_duo_infer.generation import GenerationRequest, GenerationResponse, GenerationStats
 from tiny_duo_infer.serving.api import create_app, create_app_from_path
 
 
@@ -317,6 +317,11 @@ def test_qwen3_generate_smoke():
     body = resp.json()
     assert isinstance(body["text"], str)
     assert body["stop_reason"] in ("eos", "max_new_tokens", "context_length")
+    assert body["stats"] is not None
+    assert body["stats"]["prompt_prepare_ms"] >= 0
+    assert body["stats"]["prefill_ms"] >= 0
+    assert body["stats"]["total_ms"] >= 0
+    assert "decode_step_ms" not in body["stats"]
 
 
 @pytest.mark.slow
@@ -340,3 +345,200 @@ def test_qwen3_generate_stream_smoke():
     chunks = _parse_ndjson(resp.text)
     assert chunks[-1]["done"] is True
     assert chunks[-1]["stop_reason"] in ("eos", "max_new_tokens", "context_length")
+    assert chunks[-1]["stats"] is not None
+    assert "decode_step_ms" not in chunks[-1]["stats"]
+
+
+# ---------------------------------------------------------------------------
+# Test doubles for T05 stats and context_policy tests
+# ---------------------------------------------------------------------------
+
+
+def _make_test_stats() -> GenerationStats:
+    return GenerationStats(
+        context_policy="allow_context_stop",
+        original_prompt_tokens=3,
+        accepted_prompt_tokens=3,
+        truncated_prompt_tokens=0,
+        rejected_prompt_tokens=0,
+        prompt_tokens=3,
+        generated_tokens=2,
+        stop_reason="eos",
+        prompt_prepare_ms=1.0,
+        prefill_ms=10.0,
+        time_to_first_token_ms=15.0,
+        decode_ms=20.0,
+        total_ms=35.0,
+        decode_tokens_per_sec=100.0,
+        kv_cache_allocated_bytes=8192,
+        kv_cache_active_bytes=2048,
+        max_seq_len=100,
+        active_seq_len=5,
+        model_type="llama",
+    )
+
+
+class _FakeEngineWithStats:
+    """Fake engine that returns GenerationResponse with a populated stats object."""
+
+    def generate_request(self, request: GenerationRequest) -> GenerationResponse:
+        return GenerationResponse(
+            text="hello world",
+            prompt_tokens=3,
+            generated_tokens=2,
+            stop_reason="eos",
+            stats=_make_test_stats(),
+        )
+
+    def generate_stream(self, request: GenerationRequest):
+        yield "hello"
+        yield " world"
+        yield GenerationResponse(
+            text="hello world",
+            prompt_tokens=3,
+            generated_tokens=2,
+            stop_reason="eos",
+            stats=_make_test_stats(),
+        )
+
+
+# ---------------------------------------------------------------------------
+# POST /generate — stats field
+# ---------------------------------------------------------------------------
+
+
+def test_generate_includes_stats_when_engine_provides_them():
+    """POST /generate includes stats object when engine populates GenerationResponse.stats."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate", json={"prompt": "hi"})
+    assert resp.status_code == 200
+    assert resp.json()["stats"] is not None
+
+
+def test_generate_stats_is_null_when_engine_returns_none():
+    """POST /generate returns stats=null when engine does not populate stats (e.g. fake engines)."""
+    client = TestClient(create_app(_FakeEngine()))
+    resp = client.post("/generate", json={"prompt": "hi"})
+    assert resp.status_code == 200
+    assert resp.json()["stats"] is None
+
+
+def test_generate_stats_has_required_fields():
+    """POST /generate stats object contains all required fields."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate", json={"prompt": "hi"})
+    stats = resp.json()["stats"]
+    required_fields = [
+        "context_policy",
+        "original_prompt_tokens",
+        "accepted_prompt_tokens",
+        "truncated_prompt_tokens",
+        "rejected_prompt_tokens",
+        "prompt_tokens",
+        "generated_tokens",
+        "stop_reason",
+        "prompt_prepare_ms",
+        "prefill_ms",
+        "time_to_first_token_ms",
+        "decode_ms",
+        "total_ms",
+        "decode_tokens_per_sec",
+        "kv_cache_allocated_bytes",
+        "kv_cache_active_bytes",
+        "max_seq_len",
+        "active_seq_len",
+        "model_type",
+    ]
+    for f in required_fields:
+        assert f in stats, f"missing required stats field: {f!r}"
+
+
+def test_generate_stats_omits_decode_step_ms():
+    """POST /generate stats must not include decode_step_ms (profiling-only field)."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate", json={"prompt": "hi"})
+    assert "decode_step_ms" not in resp.json()["stats"]
+
+
+# ---------------------------------------------------------------------------
+# POST /generate — context_policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ["allow_context_stop", "reject", "truncate_left", "truncate_right", "reserve_generation"],
+)
+def test_generate_accepts_all_valid_context_policies(policy):
+    """POST /generate accepts every valid context_policy value and returns 200."""
+    client = TestClient(create_app(_FakeEngine()))
+    resp = client.post("/generate", json={"prompt": "hi", "context_policy": policy})
+    assert resp.status_code == 200
+
+
+def test_generate_forwards_context_policy_to_engine():
+    """context_policy from the HTTP request body is forwarded to GenerationRequest."""
+    received: list[GenerationRequest] = []
+
+    class _RecordingEngine:
+        def generate_request(self, request: GenerationRequest) -> GenerationResponse:
+            received.append(request)
+            return GenerationResponse(
+                text="ok", prompt_tokens=1, generated_tokens=1, stop_reason="eos"
+            )
+
+    client = TestClient(create_app(_RecordingEngine()))
+    client.post("/generate", json={"prompt": "hi", "context_policy": "reject"})
+    assert len(received) == 1
+    assert received[0].context_policy == "reject"
+
+
+def test_generate_invalid_context_policy_returns_422():
+    """POST /generate with an unknown context_policy returns 422."""
+    client = TestClient(create_app(_FakeEngine()))
+    resp = client.post("/generate", json={"prompt": "hi", "context_policy": "not_a_policy"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# POST /generate/stream — stats field
+# ---------------------------------------------------------------------------
+
+
+def test_generate_stream_final_chunk_includes_stats():
+    """The final NDJSON chunk includes a stats object when the engine provides one."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate/stream", json={"prompt": "hi"})
+    chunks = _parse_ndjson(resp.text)
+    final = chunks[-1]
+    assert final["done"] is True
+    assert final["stats"] is not None
+    assert "prompt_prepare_ms" in final["stats"]
+    assert "prefill_ms" in final["stats"]
+    assert "time_to_first_token_ms" in final["stats"]
+
+
+def test_generate_stream_final_chunk_stats_null_when_engine_returns_none():
+    """The final NDJSON chunk has stats=null when the engine does not populate stats."""
+    client = TestClient(create_app(_FakeEngine()))
+    resp = client.post("/generate/stream", json={"prompt": "hi"})
+    chunks = _parse_ndjson(resp.text)
+    assert chunks[-1]["stats"] is None
+
+
+def test_generate_stream_fragment_chunks_omit_stats():
+    """Fragment NDJSON chunks (done=false) must not include a stats key."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate/stream", json={"prompt": "hi"})
+    chunks = _parse_ndjson(resp.text)
+    for chunk in chunks[:-1]:
+        assert chunk["done"] is False
+        assert "stats" not in chunk
+
+
+def test_generate_stream_final_chunk_stats_omits_decode_step_ms():
+    """Final NDJSON chunk stats must not include decode_step_ms."""
+    client = TestClient(create_app(_FakeEngineWithStats()))
+    resp = client.post("/generate/stream", json={"prompt": "hi"})
+    chunks = _parse_ndjson(resp.text)
+    assert "decode_step_ms" not in chunks[-1]["stats"]

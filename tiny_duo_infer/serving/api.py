@@ -22,7 +22,7 @@ Streaming format (NDJSON, one JSON object per line):
   Fragment chunk:  {"done": false, "text": "<fragment>"}
   Final chunk:     {"done": true, "text": "<full trimmed text>",
                     "prompt_tokens": N, "generated_tokens": N,
-                    "stop_reason": "<reason>"}
+                    "stop_reason": "<reason>", "stats": {…} | null}
 
 Stop-string edge case for streaming: when a stop string spans a token boundary
 the fragment containing the marker boundary may already be sent before the
@@ -52,7 +52,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from tiny_duo_infer.generation import ChatMessage, GenerationRequest, GenerationResponse
+from tiny_duo_infer.generation import (
+    ChatMessage,
+    GenerationRequest,
+    GenerationResponse,
+    GenerationStats,
+)
 from tiny_duo_infer.serving.worker import InferenceWorker
 
 
@@ -86,6 +91,34 @@ class _ChatMessageBody(BaseModel):
     content: str
 
 
+class GenerationStatsBody(BaseModel):
+    """Per-request generation metrics returned in HTTP responses.
+
+    Mirrors GenerationStats fields. decode_step_ms is intentionally excluded:
+    it is profiling detail that must not appear in default HTTP responses.
+    """
+
+    context_policy: str
+    original_prompt_tokens: int
+    accepted_prompt_tokens: int
+    truncated_prompt_tokens: int
+    rejected_prompt_tokens: int
+    prompt_tokens: int
+    generated_tokens: int
+    stop_reason: str
+    prompt_prepare_ms: float
+    prefill_ms: float
+    time_to_first_token_ms: float
+    decode_ms: float
+    total_ms: float
+    decode_tokens_per_sec: float
+    kv_cache_allocated_bytes: int
+    kv_cache_active_bytes: int
+    max_seq_len: int
+    active_seq_len: int
+    model_type: str
+
+
 class GenerateRequestBody(BaseModel):
     prompt: str | None = None
     messages: list[_ChatMessageBody] | None = None
@@ -96,6 +129,7 @@ class GenerateRequestBody(BaseModel):
     stop: list[str] = []
     seed: int | None = None
     chat: bool = False
+    context_policy: str = "allow_context_stop"
 
 
 class GenerateResponseBody(BaseModel):
@@ -103,6 +137,7 @@ class GenerateResponseBody(BaseModel):
     prompt_tokens: int
     generated_tokens: int
     stop_reason: str
+    stats: GenerationStatsBody | None = None
 
 
 class HealthResponse(BaseModel):
@@ -113,6 +148,32 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _stats_to_body(stats: GenerationStats | None) -> GenerationStatsBody | None:
+    if stats is None:
+        return None
+    return GenerationStatsBody(
+        context_policy=stats.context_policy,
+        original_prompt_tokens=stats.original_prompt_tokens,
+        accepted_prompt_tokens=stats.accepted_prompt_tokens,
+        truncated_prompt_tokens=stats.truncated_prompt_tokens,
+        rejected_prompt_tokens=stats.rejected_prompt_tokens,
+        prompt_tokens=stats.prompt_tokens,
+        generated_tokens=stats.generated_tokens,
+        stop_reason=stats.stop_reason,
+        prompt_prepare_ms=stats.prompt_prepare_ms,
+        prefill_ms=stats.prefill_ms,
+        time_to_first_token_ms=stats.time_to_first_token_ms,
+        decode_ms=stats.decode_ms,
+        total_ms=stats.total_ms,
+        decode_tokens_per_sec=stats.decode_tokens_per_sec,
+        kv_cache_allocated_bytes=stats.kv_cache_allocated_bytes,
+        kv_cache_active_bytes=stats.kv_cache_active_bytes,
+        max_seq_len=stats.max_seq_len,
+        active_seq_len=stats.active_seq_len,
+        model_type=stats.model_type,
+    )
 
 
 def _to_generation_request(body: GenerateRequestBody) -> GenerationRequest:
@@ -129,6 +190,7 @@ def _to_generation_request(body: GenerateRequestBody) -> GenerationRequest:
         stop=list(body.stop),
         seed=body.seed,
         chat=body.chat,
+        context_policy=body.context_policy,
     )
 
 
@@ -181,6 +243,7 @@ async def generate(body: GenerateRequestBody) -> GenerateResponseBody:
         prompt_tokens=response.prompt_tokens,
         generated_tokens=response.generated_tokens,
         stop_reason=response.stop_reason,
+        stats=_stats_to_body(response.stats),
     )
 
 
@@ -193,7 +256,7 @@ async def generate_stream(body: GenerateRequestBody) -> StreamingResponse:
       Fragment: {"done": false, "text": "<fragment>"}
       Final:    {"done": true, "text": "<full trimmed text>",
                  "prompt_tokens": N, "generated_tokens": N,
-                 "stop_reason": "<reason>"}
+                 "stop_reason": "<reason>", "stats": {…} | null}
 
     The "text" field of the final chunk carries the full accumulated text
     (stop-string trimmed) matching what POST /generate would return.
@@ -223,12 +286,14 @@ async def generate_stream(body: GenerateRequestBody) -> StreamingResponse:
             if isinstance(item, Exception):
                 raise item
             if isinstance(item, GenerationResponse):
+                stats_body = _stats_to_body(item.stats)
                 yield json.dumps({
                     "done": True,
                     "text": item.text,
                     "prompt_tokens": item.prompt_tokens,
                     "generated_tokens": item.generated_tokens,
                     "stop_reason": item.stop_reason,
+                    "stats": stats_body.model_dump() if stats_body is not None else None,
                 }) + "\n"
             else:
                 yield json.dumps({"done": False, "text": item}) + "\n"
