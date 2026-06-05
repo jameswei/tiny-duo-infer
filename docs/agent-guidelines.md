@@ -139,6 +139,10 @@ Use this flow for normal implementation tasks:
    under "Tests Reviewed".
 10. A non-owner agent records sign-off in both `CURRENT.md` (`Review Result:
     signed_off`) and the taskboard `Notes` before the task is marked `done`.
+11. After a task is committed, the agent who committed resets `CURRENT.md` for
+    the next task. If no next task exists (phase is fully closed), delete
+    `CURRENT.md` entirely — the taskboard is the permanent record. A stale
+    "done" file misleads the next session more than a missing file does.
 
 For large design changes, architecture review should happen before full
 implementation.
