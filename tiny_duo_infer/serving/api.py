@@ -118,6 +118,13 @@ class GenerationStatsBody(BaseModel):
     max_seq_len: int
     active_seq_len: int
     model_type: str
+    quantization_mode: str = "none"
+    quantization_bits: int | None = None
+    quantization_group_size: int | None = None
+    quantized_linear_count: int = 0
+    full_precision_linear_count: int = 0
+    linear_weight_full_precision_bytes: int = 0
+    linear_weight_runtime_bytes: int = 0
 
 
 class GenerateRequestBody(BaseModel):
@@ -174,6 +181,13 @@ def _stats_to_body(stats: GenerationStats | None) -> GenerationStatsBody | None:
         max_seq_len=stats.max_seq_len,
         active_seq_len=stats.active_seq_len,
         model_type=stats.model_type,
+        quantization_mode=stats.quantization_mode,
+        quantization_bits=stats.quantization_bits,
+        quantization_group_size=stats.quantization_group_size,
+        quantized_linear_count=stats.quantized_linear_count,
+        full_precision_linear_count=stats.full_precision_linear_count,
+        linear_weight_full_precision_bytes=stats.linear_weight_full_precision_bytes,
+        linear_weight_runtime_bytes=stats.linear_weight_runtime_bytes,
     )
 
 

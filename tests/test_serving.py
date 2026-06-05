@@ -429,7 +429,7 @@ def test_generate_stats_is_null_when_engine_returns_none():
 
 
 def test_generate_stats_has_required_fields():
-    """POST /generate stats object contains all required fields."""
+    """POST /generate stats object contains all required Phase 1.7 and 1.8 fields."""
     client = TestClient(create_app(_FakeEngineWithStats()))
     resp = client.post("/generate", json={"prompt": "hi"})
     stats = resp.json()["stats"]
@@ -453,9 +453,67 @@ def test_generate_stats_has_required_fields():
         "max_seq_len",
         "active_seq_len",
         "model_type",
+        # Phase 1.8 quantization fields
+        "quantization_mode",
+        "quantization_bits",
+        "quantization_group_size",
+        "quantized_linear_count",
+        "full_precision_linear_count",
+        "linear_weight_full_precision_bytes",
+        "linear_weight_runtime_bytes",
     ]
     for f in required_fields:
         assert f in stats, f"missing required stats field: {f!r}"
+
+
+def test_generate_stats_quantization_fields_mapped_correctly():
+    """HTTP mapper correctly passes non-default quantization values from GenerationStats."""
+
+    class _QuantizedFakeEngine:
+        def generate_request(self, request: GenerationRequest) -> GenerationResponse:
+            stats = GenerationStats(
+                context_policy="allow_context_stop",
+                original_prompt_tokens=3,
+                accepted_prompt_tokens=3,
+                truncated_prompt_tokens=0,
+                rejected_prompt_tokens=0,
+                prompt_tokens=3,
+                generated_tokens=2,
+                stop_reason="eos",
+                prompt_prepare_ms=1.0,
+                prefill_ms=10.0,
+                time_to_first_token_ms=15.0,
+                decode_ms=20.0,
+                total_ms=35.0,
+                decode_tokens_per_sec=100.0,
+                kv_cache_allocated_bytes=8192,
+                kv_cache_active_bytes=2048,
+                max_seq_len=100,
+                active_seq_len=5,
+                model_type="llama",
+                quantization_mode="int4",
+                quantization_bits=4,
+                quantization_group_size=64,
+                quantized_linear_count=12,
+                full_precision_linear_count=3,
+                linear_weight_full_precision_bytes=1_000_000,
+                linear_weight_runtime_bytes=250_000,
+            )
+            return GenerationResponse(
+                text="hi", prompt_tokens=3, generated_tokens=2,
+                stop_reason="eos", stats=stats,
+            )
+
+    client = TestClient(create_app(_QuantizedFakeEngine()))
+    resp = client.post("/generate", json={"prompt": "hi"})
+    s = resp.json()["stats"]
+    assert s["quantization_mode"] == "int4"
+    assert s["quantization_bits"] == 4
+    assert s["quantization_group_size"] == 64
+    assert s["quantized_linear_count"] == 12
+    assert s["full_precision_linear_count"] == 3
+    assert s["linear_weight_full_precision_bytes"] == 1_000_000
+    assert s["linear_weight_runtime_bytes"] == 250_000
 
 
 def test_generate_stats_omits_decode_step_ms():

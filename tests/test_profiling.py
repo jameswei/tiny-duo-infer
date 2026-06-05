@@ -127,7 +127,7 @@ class _FakeEngine:
             from_model_path_calls: list[tuple[Path, int]] = []
 
             @classmethod
-            def from_model_path(cls_, model_path, max_seq_len: int = 2048):
+            def from_model_path(cls_, model_path, max_seq_len: int = 2048, quantization=None):
                 cls_.from_model_path_calls.append((Path(model_path), max_seq_len))
                 eng = _FakeEngine(
                     config=_StubConfig(max_seq_len=max_seq_len),
@@ -602,3 +602,141 @@ def test_main_engine_info_uses_canonical_kv_cache_formula():
         bytes_per_element=info["kv_cache_bytes_per_element"],
     )
     assert info["kv_cache_allocated_bytes"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Quantization flags and output — T06
+# ---------------------------------------------------------------------------
+
+
+def test_profiling_default_quantization_is_none():
+    """--quantization defaults to none; engine_info shows quantization_mode=none."""
+    factory = _FakeEngine.make_factory()
+    stdout = StringIO()
+    main(
+        ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+         "--prompt", "hi", "--json"],
+        engine_cls=factory,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+    payload = json.loads(stdout.getvalue())
+    assert payload["engine_info"]["quantization_mode"] == "none"
+    assert payload["engine_info"]["quantization_bits"] is None
+    assert payload["config"]["quantization"] == "none"
+
+
+def test_profiling_quantization_flag_forwarded_to_engine():
+    """--quantization int4 is forwarded to engine_cls.from_model_path()."""
+    quant_calls: list[dict] = []
+
+    class _RecordingFactory:
+        @classmethod
+        def from_model_path(cls, model_path, max_seq_len=2048, quantization=None):
+            quant_calls.append({"quantization": quantization})
+            return _FakeEngine.make_factory()().from_model_path(model_path, max_seq_len)
+
+    main(
+        ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+         "--prompt", "hi", "--quantization", "int4", "--quant-group-size", "32"],
+        engine_cls=_RecordingFactory,
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+    from tiny_duo_infer.quantization import QuantizationConfig
+    assert len(quant_calls) == 1
+    q = quant_calls[0]["quantization"]
+    assert isinstance(q, QuantizationConfig)
+    assert q.bits == 4
+    assert q.group_size == 32
+
+
+def test_profiling_json_includes_quantization_in_engine_info():
+    """JSON output engine_info block contains the Phase 1.8 quantization keys."""
+    factory = _FakeEngine.make_factory()
+    stdout = StringIO()
+    main(
+        ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+         "--prompt", "hi", "--json"],
+        engine_cls=factory,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+    payload = json.loads(stdout.getvalue())
+    info = payload["engine_info"]
+    assert "quantization_mode" in info
+    assert "quantization_bits" in info
+    assert "quantization_group_size" in info
+    assert "linear_weight_full_precision_bytes" in info
+    assert "linear_weight_runtime_bytes" in info
+
+
+def test_profiling_human_output_includes_quantization_line():
+    """Human-readable output includes a quantization line."""
+    factory = _FakeEngine.make_factory()
+    stdout = StringIO()
+    main(
+        ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+         "--prompt", "hi"],
+        engine_cls=factory,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+    output = stdout.getvalue()
+    assert "quantization" in output
+
+
+def test_profiling_schema_version_is_2():
+    """SCHEMA_VERSION is 2 after Phase 1.8 adds quantization fields to engine_info."""
+    assert SCHEMA_VERSION == 2
+
+
+def test_profiling_invalid_quant_group_size_raises_system_exit():
+    """--quant-group-size 0 must fail with SystemExit before loading the model."""
+    factory = _FakeEngine.make_factory()
+    with pytest.raises(SystemExit):
+        main(
+            ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+             "--prompt", "hi", "--quantization", "int4", "--quant-group-size", "0"],
+            engine_cls=factory,
+            stdout=StringIO(),
+            stderr=StringIO(),
+        )
+    assert factory.from_model_path_calls == [], "model must not be loaded when group_size is invalid"
+
+
+def test_profiling_json_quantization_engine_info_reflects_engine_state():
+    """engine_info quantization fields come from engine._quantization/_linear_weight_stats."""
+    from tiny_duo_infer.quantization import QuantizationConfig
+    from tiny_duo_infer.weights.quantizer import LinearWeightStats
+
+    class _QuantizedFactory:
+        """Factory that returns a fake engine with quantization attributes set."""
+        @classmethod
+        def from_model_path(cls, model_path, max_seq_len=2048, quantization=None):
+            eng = _FakeEngine.make_factory()().from_model_path(model_path, max_seq_len)
+            eng._quantization = QuantizationConfig(bits=4, group_size=64)
+            eng._linear_weight_stats = LinearWeightStats(
+                quantized_linear_count=15,
+                full_precision_linear_count=0,
+                linear_weight_full_precision_bytes=2_000_000,
+                linear_weight_runtime_bytes=500_000,
+            )
+            return eng
+
+    stdout = StringIO()
+    main(
+        ["--model-path", "models/tiny", "--runs", "1", "--warmup-runs", "0",
+         "--prompt", "hi", "--quantization", "int4", "--json"],
+        engine_cls=_QuantizedFactory,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+    payload = json.loads(stdout.getvalue())
+    info = payload["engine_info"]
+    assert info["quantization_mode"] == "int4"
+    assert info["quantization_bits"] == 4
+    assert info["quantization_group_size"] == 64
+    assert info["linear_weight_full_precision_bytes"] == 2_000_000
+    assert info["linear_weight_runtime_bytes"] == 500_000
+

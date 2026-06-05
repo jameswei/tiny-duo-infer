@@ -47,6 +47,7 @@ from tiny_duo_infer.generation import (
     GenerationStats,
     kv_cache_bytes as _kv_cache_bytes,  # re-exposed for benchmark.py reuse
 )
+from tiny_duo_infer.quantization import QuantizationConfig
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -54,7 +55,9 @@ from tiny_duo_infer.generation import (
 
 # Stable JSON schema version. Bump when fields are added/renamed/removed so
 # downstream comparison tooling can branch on it.
-SCHEMA_VERSION: int = 1
+# v2: Phase 1.8 adds quantization_mode, quantization_bits, quantization_group_size,
+#     linear_weight_full_precision_bytes, and linear_weight_runtime_bytes to engine_info.
+SCHEMA_VERSION: int = 2
 
 # Built-in prompt set when neither --prompt nor --prompt-file is provided.
 # Three short prompts that exercise different prompt lengths and stop reasons
@@ -86,6 +89,25 @@ _CONTEXT_POLICY_CHOICES: tuple[str, ...] = (
     "truncate_right",
     "reserve_generation",
 )
+
+# Quantization choices, mirroring tiny_duo_infer.cli._QUANTIZATION_CHOICES.
+_QUANTIZATION_CHOICES: tuple[str, ...] = ("none", "int4", "int8")
+
+
+def _positive_int(value: str) -> int:
+    """Argparse type that rejects zero and negative group sizes before model load."""
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return parsed
+
+
+def _build_quantization_config(args: argparse.Namespace) -> QuantizationConfig | None:
+    """Translate --quantization / --quant-group-size into a QuantizationConfig."""
+    if args.quantization == "none":
+        return None
+    bits = 4 if args.quantization == "int4" else 8
+    return QuantizationConfig(bits=bits, group_size=args.quant_group_size)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +264,9 @@ def run_profile(
     # constant across runs; report it once so the JSON consumer doesn't need
     # to dedupe it across every measured run.
     bytes_per_element = _bytes_per_element(engine)
+    quant = getattr(engine, "_quantization", None)
+    ws = getattr(engine, "_linear_weight_stats", None)
+    quant_mode = "none" if quant is None else f"int{quant.bits}"
     engine_info = {
         "model_type": cfg.model_type,
         "max_seq_len": cfg.max_seq_len,
@@ -256,6 +281,11 @@ def run_profile(
             bytes_per_element=bytes_per_element,
         ),
         "kv_cache_bytes_per_element": bytes_per_element,
+        "quantization_mode": quant_mode,
+        "quantization_bits": quant.bits if quant is not None else None,
+        "quantization_group_size": quant.group_size if quant is not None else None,
+        "linear_weight_full_precision_bytes": ws.linear_weight_full_precision_bytes if ws else 0,
+        "linear_weight_runtime_bytes": ws.linear_weight_runtime_bytes if ws else 0,
     }
 
     per_prompt: list[dict] = []
@@ -322,6 +352,8 @@ def run_profile(
             "context_policy": args.context_policy,
             "runs": args.runs,
             "warmup_runs": args.warmup_runs,
+            "quantization": args.quantization,
+            "quant_group_size": args.quant_group_size,
         },
         "prompts": per_prompt,
         "overall_summary": aggregate_runs(all_measured),
@@ -393,6 +425,30 @@ def format_human(result: dict) -> str:
         f"runs           : {cfg['runs']} measured"
         f" + {cfg['warmup_runs']} warmup"
     )
+
+    # Quantization and weight-memory summary (Phase 1.8)
+    quant_mode = info.get("quantization_mode", "none")
+    fp_bytes = info.get("linear_weight_full_precision_bytes", 0)
+    rt_bytes = info.get("linear_weight_runtime_bytes", 0)
+    if quant_mode == "none":
+        lines.append(
+            f"quantization   : none"
+            f"  (linear_weight_bytes={fp_bytes:,})"
+        )
+    else:
+        quant_gs = info.get("quantization_group_size", "?")
+        if fp_bytes > 0:
+            pct = (rt_bytes - fp_bytes) / fp_bytes * 100.0
+            mem_str = (
+                f"{rt_bytes:,} bytes runtime vs {fp_bytes:,} full-precision"
+                f" ({pct:+.1f}%)"
+            )
+        else:
+            mem_str = f"{rt_bytes:,} bytes runtime"
+        lines.append(
+            f"quantization   : {quant_mode} group_size={quant_gs}"
+            f"  weight_memory={mem_str}"
+        )
     lines.append("")
 
     for entry in result["prompts"]:
@@ -472,6 +528,7 @@ def main(
     engine = engine_cls.from_model_path(
         Path(args.model_path),
         max_seq_len=args.max_seq_len,
+        quantization=_build_quantization_config(args),
     )
 
     progress = None if args.json else stderr
@@ -587,6 +644,25 @@ def _build_parser() -> argparse.ArgumentParser:
             "Emit machine-readable JSON to stdout instead of the human "
             "report. Progress lines (warmup, per-run) are suppressed when "
             "--json is set so stdout stays a clean JSON document."
+        ),
+    )
+    parser.add_argument(
+        "--quantization",
+        choices=_QUANTIZATION_CHOICES,
+        default="none",
+        help=(
+            "Weight-only quantization mode used when loading the model. "
+            "none = full precision (default); int4 = INT4; int8 = INT8. "
+            "Use this flag to compare full-precision and quantized profiles."
+        ),
+    )
+    parser.add_argument(
+        "--quant-group-size",
+        type=_positive_int,
+        default=64,
+        help=(
+            "Quantization group size. Must evenly divide every quantized "
+            "weight's input dimension. Default: 64."
         ),
     )
     return parser

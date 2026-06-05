@@ -113,14 +113,18 @@ class QuantizedWeight:
     without modification.
 
     Attributes:
-        qweight:      Packed quantized weight array from mx.quantize().
-        scales:       Per-group scale factors; shape (out_features, in_features // group_size).
-        biases:       Per-group zero-point biases; same shape as scales.
-        bits:         Bit width (4 or 8).
-        group_size:   Input-dimension elements per quantization group.
-        mode:         Quantization mode ("affine").
-        out_features: Original weight shape[0] — output dimension of the projection.
-        in_features:  Original weight shape[1] — input dimension of the projection.
+        qweight:         Packed quantized weight array from mx.quantize().
+        scales:          Per-group scale factors; shape (out_features, in_features // group_size).
+        biases:          Per-group zero-point biases; same shape as scales.
+        bits:            Bit width (4 or 8).
+        group_size:      Input-dimension elements per quantization group.
+        mode:            Quantization mode ("affine").
+        out_features:    Original weight shape[0] — output dimension of the projection.
+        in_features:     Original weight shape[1] — input dimension of the projection.
+        original_nbytes: Byte size of the full-precision source tensor before quantization.
+                         Stored so memory accounting can compare quantized runtime cost
+                         against the original without assuming a fixed element size
+                         (real model weights are bfloat16; test fixtures may be float32).
     """
 
     qweight: mx.array
@@ -131,3 +135,4 @@ class QuantizedWeight:
     mode: str
     out_features: int
     in_features: int
+    original_nbytes: int

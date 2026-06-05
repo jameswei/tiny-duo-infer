@@ -41,7 +41,7 @@ from tiny_duo_infer.sampling import sample
 from tiny_duo_infer.tokenizer.loader import Tokenizer
 from tiny_duo_infer.weights.llama_converter import convert as convert_llama
 from tiny_duo_infer.weights.loader import load_weights
-from tiny_duo_infer.weights.quantizer import quantize_weights
+from tiny_duo_infer.weights.quantizer import LinearWeightStats, compute_linear_weight_stats, quantize_weights
 from tiny_duo_infer.weights.qwen3_converter import convert as convert_qwen3
 
 
@@ -65,19 +65,28 @@ class Engine:
         tokenizer: Tokenizer,
         config: ModelConfig,
         max_seq_len: int,
+        quantization: QuantizationConfig | None = None,
+        linear_weight_stats: LinearWeightStats | None = None,
     ) -> None:
         """
         Create an engine around already-constructed model components.
 
         Args:
-            model:       loaded model. Forward accepts input IDs shaped
-                         (B, S), a KVCache, and a position offset.
-            tokenizer:   project tokenizer wrapper used by text prefill and
-                         later decode.
-            config:      model architecture dimensions used for cache allocation.
-            max_seq_len: maximum total sequence length for one request. The
-                         per-request KV cache has shape
-                         (1, n_kv_heads, max_seq_len, head_dim) per layer.
+            model:               loaded model. Forward accepts input IDs shaped
+                                 (B, S), a KVCache, and a position offset.
+            tokenizer:           project tokenizer wrapper used by text prefill
+                                 and later decode.
+            config:              model architecture dimensions used for cache
+                                 allocation.
+            max_seq_len:         maximum total sequence length for one request.
+                                 The per-request KV cache has shape
+                                 (1, n_kv_heads, max_seq_len, head_dim) per layer.
+            quantization:        optional weight-only quantization config used to
+                                 load this engine. Stored for GenerationStats
+                                 reporting. None means full-precision.
+            linear_weight_stats: memory accounting for Linear projection weights,
+                                 computed once at load time. None defaults to
+                                 all-zero stats (for test stubs).
         """
         if max_seq_len <= 0:
             raise ValueError(f"max_seq_len must be > 0, got {max_seq_len}")
@@ -87,6 +96,8 @@ class Engine:
         self.config = config
         self.max_seq_len = max_seq_len
         self.cache: KVCache | None = None
+        self._quantization = quantization
+        self._linear_weight_stats = linear_weight_stats or LinearWeightStats(0, 0, 0, 0)
 
     @classmethod
     def from_model_path(
@@ -129,6 +140,10 @@ class Engine:
         if quantization is not None:
             project_weights = quantize_weights(project_weights, quantization)
 
+        # Compute linear-weight memory stats once at load time so every
+        # GenerationStats for this engine carries accurate accounting.
+        weight_stats = compute_linear_weight_stats(project_weights)
+
         model = model_cls(runtime_config)
         model.load_weights(project_weights)
 
@@ -137,6 +152,8 @@ class Engine:
             tokenizer=tokenizer,
             config=runtime_config,
             max_seq_len=max_seq_len,
+            quantization=quantization,
+            linear_weight_stats=weight_stats,
         )
 
     def prefill(self, prompt: str) -> mx.array:
@@ -539,6 +556,8 @@ class Engine:
             active_seq_len, self.config.head_dim, kv_bpe,
         )
 
+        quant = self._quantization
+        ws = self._linear_weight_stats
         stats = GenerationStats(
             context_policy=request.context_policy,
             original_prompt_tokens=outcome.original_prompt_tokens,
@@ -559,6 +578,13 @@ class Engine:
             max_seq_len=self.max_seq_len,
             active_seq_len=active_seq_len,
             model_type=self.config.model_type,
+            quantization_mode="none" if quant is None else f"int{quant.bits}",
+            quantization_bits=None if quant is None else quant.bits,
+            quantization_group_size=None if quant is None else quant.group_size,
+            quantized_linear_count=ws.quantized_linear_count,
+            full_precision_linear_count=ws.full_precision_linear_count,
+            linear_weight_full_precision_bytes=ws.linear_weight_full_precision_bytes,
+            linear_weight_runtime_bytes=ws.linear_weight_runtime_bytes,
         )
 
         yield GenerationResponse(

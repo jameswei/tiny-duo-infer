@@ -14,7 +14,11 @@ import pytest
 from tiny_duo_infer.models.base import Linear
 from tiny_duo_infer.quantization import QuantizationConfig, QuantizedWeight
 from tiny_duo_infer.generation import GenerationStats
-from tiny_duo_infer.weights.quantizer import quantize_weights
+from tiny_duo_infer.weights.quantizer import (
+    LinearWeightStats,
+    compute_linear_weight_stats,
+    quantize_weights,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,7 @@ def _make_quantized_weight(
         mode="affine",
         out_features=out_features,
         in_features=in_features,
+        original_nbytes=int(w.nbytes),
     )
 
 
@@ -88,6 +93,7 @@ def _make_quantized_linear(
         mode="affine",
         out_features=out_features,
         in_features=in_features,
+        original_nbytes=int(w.nbytes),
     )
     return linear, w
 
@@ -634,3 +640,96 @@ def test_quantize_weights_bfloat16_input():
     assert isinstance(result["lm_head.weight"], QuantizedWeight)
     assert isinstance(result["layers.0.attn.q_proj.weight"], QuantizedWeight)
     assert isinstance(result["embed_tokens.weight"], mx.array)
+
+
+# ---------------------------------------------------------------------------
+# QuantizedWeight.original_nbytes — T06
+# ---------------------------------------------------------------------------
+
+
+def test_quantized_weight_original_nbytes_stores_source_size():
+    w = mx.random.normal(shape=(8, 64))
+    qw = _make_quantized_weight(out_features=8, in_features=64, group_size=32, bits=4)
+    # _make_quantized_weight creates from float32 normal (4 bytes/element)
+    assert qw.original_nbytes == 8 * 64 * 4
+
+
+def test_quantize_weights_original_nbytes_matches_source_tensor():
+    w = mx.zeros(shape=(_TQ_V, _TQ_D), dtype=mx.float32)
+    weights = {"lm_head.weight": w}
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    qw = result["lm_head.weight"]
+    assert isinstance(qw, QuantizedWeight)
+    assert qw.original_nbytes == int(w.nbytes)
+
+
+def test_quantize_weights_original_nbytes_bfloat16():
+    # bfloat16 weights have 2 bytes/element; original_nbytes must reflect the actual dtype.
+    w = mx.zeros(shape=(8, 64), dtype=mx.bfloat16)
+    weights = {"lm_head.weight": w}
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    qw = result["lm_head.weight"]
+    assert qw.original_nbytes == 8 * 64 * 2  # 2 bytes per bfloat16 element
+
+
+# ---------------------------------------------------------------------------
+# compute_linear_weight_stats() — T06
+# ---------------------------------------------------------------------------
+
+
+def test_compute_linear_weight_stats_all_full_precision():
+    weights = _make_llama_project_weights()
+    stats = compute_linear_weight_stats(weights)
+    assert stats.quantized_linear_count == 0
+    # 2 layers × 7 projections + 1 lm_head = 15 linear weights
+    assert stats.full_precision_linear_count == 15
+    assert stats.linear_weight_full_precision_bytes > 0
+    assert stats.linear_weight_full_precision_bytes == stats.linear_weight_runtime_bytes
+
+
+def test_compute_linear_weight_stats_all_quantized():
+    weights = _make_llama_project_weights()
+    config = QuantizationConfig(bits=4, group_size=64)
+    quantized = quantize_weights(weights, config)
+    stats = compute_linear_weight_stats(quantized)
+    assert stats.quantized_linear_count == 15
+    assert stats.full_precision_linear_count == 0
+    # Quantized runtime bytes are less than full-precision for real-sized weights
+    assert stats.linear_weight_full_precision_bytes > 0
+    assert stats.linear_weight_runtime_bytes > 0
+
+
+def test_compute_linear_weight_stats_embed_tokens_excluded():
+    # embed_tokens should not be counted even though it is 2D
+    weights = {
+        "embed_tokens.weight": mx.zeros(shape=(_TQ_V, _TQ_D)),
+        "lm_head.weight": mx.zeros(shape=(_TQ_V, _TQ_D)),
+        "final_norm.weight": mx.zeros(shape=(_TQ_D,)),
+    }
+    stats = compute_linear_weight_stats(weights)
+    # Only lm_head counts; embed_tokens excluded
+    assert stats.full_precision_linear_count == 1
+    expected_bytes = int(mx.zeros(shape=(_TQ_V, _TQ_D)).nbytes)
+    assert stats.linear_weight_full_precision_bytes == expected_bytes
+
+
+def test_compute_linear_weight_stats_quantized_fp_bytes_from_original_nbytes():
+    # For QuantizedWeight, full-precision bytes come from original_nbytes,
+    # not from a fixed dtype assumption. Test with bfloat16 to verify.
+    w_bf16 = mx.zeros(shape=(_TQ_V, _TQ_D), dtype=mx.bfloat16)
+    weights: dict = {"lm_head.weight": w_bf16}
+    quantized = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    stats = compute_linear_weight_stats(quantized)
+    # bfloat16 = 2 bytes/element
+    assert stats.linear_weight_full_precision_bytes == _TQ_V * _TQ_D * 2
+
+
+def test_compute_linear_weight_stats_runtime_bytes_less_than_fp_for_int4():
+    # INT4 packs 8 values per 32-bit word, so runtime should be smaller than full-precision
+    # for any reasonably sized matrix.
+    weights = {"lm_head.weight": mx.zeros(shape=(_TQ_V, _TQ_D))}
+    quantized = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    stats = compute_linear_weight_stats(quantized)
+    assert stats.linear_weight_runtime_bytes < stats.linear_weight_full_precision_bytes
+
+

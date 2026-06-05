@@ -400,6 +400,13 @@ def test_main_show_stats_one_field_per_line():
         "original_prompt_tokens",
         "accepted_prompt_tokens",
         "truncated_prompt_tokens",
+        "quantization_mode",
+        "quantization_bits",
+        "quantization_group_size",
+        "quantized_linear_count",
+        "full_precision_linear_count",
+        "linear_weight_full_precision_bytes",
+        "linear_weight_runtime_bytes",
     ]
 
 

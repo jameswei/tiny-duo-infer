@@ -970,6 +970,61 @@ def test_generate_stream_final_response_has_stats(tiny_model_config):
 
 
 # ---------------------------------------------------------------------------
+# GenerationStats quantization fields — T06
+# ---------------------------------------------------------------------------
+
+
+def test_generate_request_stats_quantization_mode_none_by_default(tiny_model_config):
+    """Engine constructed without quantization reports mode=none, bits=None."""
+    engine = _make_engine(tiny_model_config)
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    assert resp.stats is not None
+    assert resp.stats.quantization_mode == "none"
+    assert resp.stats.quantization_bits is None
+    assert resp.stats.quantization_group_size is None
+
+
+def test_generate_request_stats_quantization_counts_zero_by_default(tiny_model_config):
+    """Engine with no quantization has zero for all weight count/byte fields."""
+    engine = _make_engine(tiny_model_config)
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.quantized_linear_count == 0
+    assert s.full_precision_linear_count == 0
+    assert s.linear_weight_full_precision_bytes == 0
+    assert s.linear_weight_runtime_bytes == 0
+
+
+def test_generate_request_stats_quantization_mode_from_engine(tiny_model_config):
+    """Engine stores quantization config and stamps it into every GenerationStats."""
+    from tiny_duo_infer.weights.quantizer import LinearWeightStats
+
+    quant = QuantizationConfig(bits=4, group_size=64)
+    ws = LinearWeightStats(
+        quantized_linear_count=10,
+        full_precision_linear_count=2,
+        linear_weight_full_precision_bytes=2_000_000,
+        linear_weight_runtime_bytes=500_000,
+    )
+    engine = _make_engine(tiny_model_config)
+    engine._quantization = quant
+    engine._linear_weight_stats = ws
+
+    req = GenerationRequest(prompt="hello", max_new_tokens=1, temperature=0.0)
+    resp = engine.generate_request(req)
+    s = resp.stats
+    assert s.quantization_mode == "int4"
+    assert s.quantization_bits == 4
+    assert s.quantization_group_size == 64
+    assert s.quantized_linear_count == 10
+    assert s.full_precision_linear_count == 2
+    assert s.linear_weight_full_precision_bytes == 2_000_000
+    assert s.linear_weight_runtime_bytes == 500_000
+
+
+# ---------------------------------------------------------------------------
 # Slow smoke tests (require local model artifacts)
 # ---------------------------------------------------------------------------
 

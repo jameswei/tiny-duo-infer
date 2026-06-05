@@ -17,6 +17,8 @@ stay full precision.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import mlx.core as mx
 
 from tiny_duo_infer.quantization import QuantizationConfig, QuantizedWeight
@@ -87,6 +89,7 @@ def quantize_weights(
                 f"is not divisible by group_size={config.group_size}."
             )
 
+        original_nbytes = int(tensor.nbytes)
         qweight, scales, biases = mx.quantize(
             tensor, group_size=config.group_size, bits=config.bits
         )
@@ -99,6 +102,76 @@ def quantize_weights(
             mode=config.mode,
             out_features=out_features,
             in_features=in_features,
+            original_nbytes=original_nbytes,
         )
 
     return result
+
+
+@dataclass
+class LinearWeightStats:
+    """Memory accounting for Linear projection weights.
+
+    Tracks how many projections are quantized vs full-precision and how many
+    bytes each costs at runtime vs at full precision — the core comparison
+    Phase 1.8 is designed to make visible.
+
+    Embeddings (embed_tokens) and norm weights are excluded from all counts
+    and byte totals; this is documented here and in the profiling output.
+    """
+
+    quantized_linear_count: int
+    full_precision_linear_count: int
+    linear_weight_full_precision_bytes: int
+    linear_weight_runtime_bytes: int
+
+
+def compute_linear_weight_stats(
+    project_weights: dict[str, mx.array | QuantizedWeight],
+) -> LinearWeightStats:
+    """Compute memory accounting for Linear projection weights.
+
+    Iterates the project weight dict and counts / measures only the eligible
+    Linear projection keys (same eligibility rules as quantize_weights).
+    embed_tokens and norm weights are excluded from all totals.
+
+    For QuantizedWeight entries, `original_nbytes` gives the exact full-precision
+    size captured before quantization — no dtype assumption needed.
+    Runtime bytes for a quantized weight are qweight + scales + biases.
+
+    For full-precision mx.array entries, full-precision bytes and runtime bytes
+    are both the tensor's actual nbytes.
+
+    Args:
+        project_weights: flat project key → mx.array | QuantizedWeight dict.
+
+    Returns:
+        LinearWeightStats with counts and byte totals.
+    """
+    quantized_count = 0
+    fp_count = 0
+    fp_bytes = 0
+    runtime_bytes = 0
+
+    for key, value in project_weights.items():
+        if isinstance(value, QuantizedWeight):
+            # All QuantizedWeight objects in the dict come from eligible linear
+            # projections via quantize_weights(); no further eligibility check needed.
+            quantized_count += 1
+            fp_bytes += value.original_nbytes
+            runtime_bytes += (
+                int(value.qweight.nbytes)
+                + int(value.scales.nbytes)
+                + int(value.biases.nbytes)
+            )
+        elif isinstance(value, mx.array) and _is_eligible(key, value):
+            fp_count += 1
+            fp_bytes += int(value.nbytes)
+            runtime_bytes += int(value.nbytes)
+
+    return LinearWeightStats(
+        quantized_linear_count=quantized_count,
+        full_precision_linear_count=fp_count,
+        linear_weight_full_precision_bytes=fp_bytes,
+        linear_weight_runtime_bytes=runtime_bytes,
+    )

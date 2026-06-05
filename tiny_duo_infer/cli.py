@@ -178,6 +178,13 @@ def _format_stats_lines(stats: GenerationStats) -> list[str]:
         f"original_prompt_tokens={stats.original_prompt_tokens}",
         f"accepted_prompt_tokens={stats.accepted_prompt_tokens}",
         f"truncated_prompt_tokens={stats.truncated_prompt_tokens}",
+        f"quantization_mode={stats.quantization_mode}",
+        f"quantization_bits={stats.quantization_bits}",
+        f"quantization_group_size={stats.quantization_group_size}",
+        f"quantized_linear_count={stats.quantized_linear_count}",
+        f"full_precision_linear_count={stats.full_precision_linear_count}",
+        f"linear_weight_full_precision_bytes={stats.linear_weight_full_precision_bytes}",
+        f"linear_weight_runtime_bytes={stats.linear_weight_runtime_bytes}",
     ]
 
 
