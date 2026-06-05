@@ -18,6 +18,7 @@ from typing import Literal
 
 
 _VALID_ROLES: frozenset[str] = frozenset({"system", "user", "assistant"})
+_VALID_QUANTIZATION_MODES: frozenset[str] = frozenset({"none", "int4", "int8"})
 
 StopReason = Literal["eos", "max_new_tokens", "stop_string", "context_length"]
 
@@ -173,7 +174,77 @@ class GenerationStats:
     decode_step_ms: list[float] = field(default_factory=list)
     model_type: str = ""
 
+    # Phase 1.8 — weight quantization metadata.
+    # Defaults represent the no-quantization (full-precision) path so existing
+    # callers that do not set these fields remain valid.
+    quantization_mode: str = "none"           # "none", "int4", or "int8"
+    quantization_bits: int | None = None
+    quantization_group_size: int | None = None
+    quantized_linear_count: int = 0
+    full_precision_linear_count: int = 0
+    linear_weight_full_precision_bytes: int = 0
+    linear_weight_runtime_bytes: int = 0
+
     def __post_init__(self) -> None:
+        if self.quantization_mode not in _VALID_QUANTIZATION_MODES:
+            raise ValueError(
+                f"quantization_mode must be one of "
+                f"{sorted(_VALID_QUANTIZATION_MODES)!r}, "
+                f"got {self.quantization_mode!r}."
+            )
+
+        # Non-negative counts and byte fields — checked before coherence so that
+        # negative values always produce a clear "must be >= 0" message regardless
+        # of quantization_mode.
+        for _name, _val in (
+            ("quantized_linear_count", self.quantized_linear_count),
+            ("full_precision_linear_count", self.full_precision_linear_count),
+            ("linear_weight_full_precision_bytes", self.linear_weight_full_precision_bytes),
+            ("linear_weight_runtime_bytes", self.linear_weight_runtime_bytes),
+        ):
+            if _val < 0:
+                raise ValueError(f"{_name} must be >= 0, got {_val}.")
+
+        # Coherence: bits/group_size/count must be consistent with mode.
+        if self.quantization_mode == "none":
+            if self.quantization_bits is not None:
+                raise ValueError(
+                    f"quantization_bits must be None when quantization_mode is 'none',"
+                    f" got {self.quantization_bits}."
+                )
+            if self.quantization_group_size is not None:
+                raise ValueError(
+                    f"quantization_group_size must be None when quantization_mode is"
+                    f" 'none', got {self.quantization_group_size}."
+                )
+            if self.quantized_linear_count != 0:
+                raise ValueError(
+                    f"quantized_linear_count must be 0 when quantization_mode is"
+                    f" 'none', got {self.quantized_linear_count}."
+                )
+        else:
+            expected_bits = 4 if self.quantization_mode == "int4" else 8
+            if self.quantization_bits != expected_bits:
+                raise ValueError(
+                    f"quantization_bits must be {expected_bits} when"
+                    f" quantization_mode is {self.quantization_mode!r},"
+                    f" got {self.quantization_bits}."
+                )
+            if (
+                self.quantization_group_size is None
+                or self.quantization_group_size <= 0
+            ):
+                raise ValueError(
+                    f"quantization_group_size must be a positive integer when"
+                    f" quantization_mode is {self.quantization_mode!r},"
+                    f" got {self.quantization_group_size}."
+                )
+
+        # Note: linear_weight_runtime_bytes <= linear_weight_full_precision_bytes
+        # is NOT enforced as a hard invariant.  For tiny test matrices with small
+        # group sizes, scales and biases overhead can exceed weight savings, making
+        # runtime_bytes > full_precision_bytes a valid (if unusual) outcome.
+
         if self.context_policy not in _VALID_CONTEXT_POLICIES:
             raise ValueError(
                 f"context_policy must be one of {sorted(_VALID_CONTEXT_POLICIES)!r},"
