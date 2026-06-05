@@ -119,6 +119,9 @@ Comments should explain reasoning, invariants, shapes, and inference concepts.
 
 Use this flow for normal implementation tasks:
 
+0. If `CURRENT.md` exists, read it first for live task state and any open
+   review findings. Then read the phase spec and taskboard for full context.
+   `CURRENT.md` is a fast pointer, not a replacement for the spec and taskboard.
 1. Read the relevant proposal, phase spec, ADRs, and existing code.
 2. Confirm the task belongs to the current phase.
 3. Make the smallest change that satisfies the task.
@@ -126,10 +129,16 @@ Use this flow for normal implementation tasks:
 5. Update docs if the change affects behavior, public interfaces, architecture,
    or phase scope.
 6. Run relevant tests.
-7. Produce a handoff note.
-8. Reviewer checks the change against the role-specific checklist.
-9. Test verifier records test results and environment details.
-10. A non-owner agent records sign-off before the task is marked `done`.
+7. Produce a handoff note. Update `CURRENT.md` status to `review`.
+8. Reviewer checks the change against the role-specific checklist. Reviewer
+   writes findings directly to `CURRENT.md` under "Findings From Last Review",
+   tagged `[Blocking]`, `[Non-blocking]`, `[Nit]`, or `[Question]`. Reviewer
+   sets `Review Result` to `changes_requested` or `signed_off` and updates
+   `Last Updated` / `Updated By`.
+9. Test verifier records test results and environment details in `CURRENT.md`
+   under "Tests Reviewed".
+10. A non-owner agent records sign-off in both `CURRENT.md` (`Review Result:
+    signed_off`) and the taskboard `Notes` before the task is marked `done`.
 
 For large design changes, architecture review should happen before full
 implementation.

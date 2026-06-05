@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 /models/
 *.safetensors
+# Active task whiteboard — ephemeral live state, not committed history
+CURRENT.md

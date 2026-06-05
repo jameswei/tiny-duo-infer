@@ -1,5 +1,9 @@
 # Agent Entry Point
 
+If `CURRENT.md` exists at the project root, read it first — it has the live
+state of the active task, any open review findings, and the reviewer's last
+result. Then continue with the full doc reading order below.
+
 Before changing code, read the project docs in this order:
 
 1. `docs/file-structure.md`
