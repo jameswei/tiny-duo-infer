@@ -1,8 +1,9 @@
 """
-Tests for tiny_duo_infer.quantization.
+Tests for tiny_duo_infer.quantization and tiny_duo_infer.weights.quantizer.
 
 Covers QuantizationConfig validation, QuantizedWeight construction and metadata,
-and the Phase 1.8 quantization fields added to GenerationStats.
+the Phase 1.8 quantization fields added to GenerationStats, Linear.forward()
+dispatch (T02), and quantize_weights() conversion step (T03).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import pytest
 from tiny_duo_infer.models.base import Linear
 from tiny_duo_infer.quantization import QuantizationConfig, QuantizedWeight
 from tiny_duo_infer.generation import GenerationStats
+from tiny_duo_infer.weights.quantizer import quantize_weights
 
 
 # ---------------------------------------------------------------------------
@@ -467,3 +469,168 @@ def test_generation_stats_rejects_none_mode_with_nonzero_quantized_count():
 def test_generation_stats_rejects_negative_counts_and_bytes(field, value):
     with pytest.raises(ValueError, match=f"{field} must be >= 0"):
         _make_stats(**{field: value})
+
+
+# ---------------------------------------------------------------------------
+# quantize_weights() — T03: weight conversion step
+#
+# Dimensions match TINY_CONFIG (d_model=64, intermediate_size=128, vocab=256,
+# n_kv_heads=2, head_dim=16 → kv_width=32).  group_size=64 divides all
+# in_features evenly for Llama-shaped weights.
+# ---------------------------------------------------------------------------
+
+_TQ_D = 64          # d_model
+_TQ_I = 128         # intermediate_size
+_TQ_V = 256         # vocab_size
+_TQ_KV = 32         # n_kv_heads * head_dim = 2 * 16
+
+
+def _make_llama_project_weights(
+    dtype: mx.Dtype = mx.float32,
+) -> dict[str, mx.array]:
+    """Minimal project-key weight dict matching TINY_CONFIG dimensions."""
+    w: dict[str, mx.array] = {
+        "embed_tokens.weight": mx.random.normal(shape=(_TQ_V, _TQ_D)).astype(dtype),
+        "final_norm.weight": mx.random.normal(shape=(_TQ_D,)).astype(dtype),
+        "lm_head.weight": mx.random.normal(shape=(_TQ_V, _TQ_D)).astype(dtype),
+    }
+    for layer_idx in range(2):
+        p = f"layers.{layer_idx}"
+        w.update({
+            f"{p}.input_norm.weight": mx.random.normal(shape=(_TQ_D,)).astype(dtype),
+            f"{p}.post_attn_norm.weight": mx.random.normal(shape=(_TQ_D,)).astype(dtype),
+            f"{p}.attn.q_proj.weight": mx.random.normal(shape=(_TQ_D, _TQ_D)).astype(dtype),
+            f"{p}.attn.k_proj.weight": mx.random.normal(shape=(_TQ_KV, _TQ_D)).astype(dtype),
+            f"{p}.attn.v_proj.weight": mx.random.normal(shape=(_TQ_KV, _TQ_D)).astype(dtype),
+            f"{p}.attn.o_proj.weight": mx.random.normal(shape=(_TQ_D, _TQ_D)).astype(dtype),
+            f"{p}.ffn.gate_proj.weight": mx.random.normal(shape=(_TQ_I, _TQ_D)).astype(dtype),
+            f"{p}.ffn.up_proj.weight": mx.random.normal(shape=(_TQ_I, _TQ_D)).astype(dtype),
+            f"{p}.ffn.down_proj.weight": mx.random.normal(shape=(_TQ_D, _TQ_I)).astype(dtype),
+        })
+    return w
+
+
+def test_quantize_weights_eligible_key_becomes_quantized_weight():
+    weights = {"lm_head.weight": mx.random.normal(shape=(_TQ_V, _TQ_D))}
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    assert isinstance(result["lm_head.weight"], QuantizedWeight)
+
+
+def test_quantize_weights_non_eligible_stays_mx_array():
+    weights = {
+        "embed_tokens.weight": mx.random.normal(shape=(_TQ_V, _TQ_D)),
+        "final_norm.weight": mx.random.normal(shape=(_TQ_D,)),
+    }
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    assert isinstance(result["embed_tokens.weight"], mx.array)
+    assert isinstance(result["final_norm.weight"], mx.array)
+
+
+def test_quantize_weights_returns_all_keys():
+    weights = _make_llama_project_weights()
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    assert set(result.keys()) == set(weights.keys())
+
+
+def test_quantize_weights_all_eligible_suffixes_become_quantized():
+    config = QuantizationConfig(bits=4, group_size=64)
+    weights = _make_llama_project_weights()
+    result = quantize_weights(weights, config)
+
+    eligible_suffixes = (
+        ".q_proj.weight", ".k_proj.weight", ".v_proj.weight", ".o_proj.weight",
+        ".gate_proj.weight", ".up_proj.weight", ".down_proj.weight",
+    )
+    for key, value in result.items():
+        if key == "lm_head.weight" or any(key.endswith(s) for s in eligible_suffixes):
+            assert isinstance(value, QuantizedWeight), f"expected QuantizedWeight for {key!r}"
+        else:
+            assert isinstance(value, mx.array), f"expected mx.array for {key!r}"
+
+
+def test_quantize_weights_embed_tokens_not_quantized():
+    weights = _make_llama_project_weights()
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    assert isinstance(result["embed_tokens.weight"], mx.array)
+
+
+def test_quantize_weights_1d_norm_weights_not_quantized():
+    weights = _make_llama_project_weights()
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+    for key in ("final_norm.weight", "layers.0.input_norm.weight", "layers.0.post_attn_norm.weight"):
+        assert isinstance(result[key], mx.array), f"{key!r} should stay full precision"
+
+
+def test_quantize_weights_qwen3_qk_norm_not_quantized():
+    # Qwen3 q_norm and k_norm weights are 1-D (head_dim,); must not be quantized.
+    # head_dim=16 in TINY_QWEN3_CONFIG.
+    weights = {
+        "layers.0.attn.q_norm.weight": mx.random.normal(shape=(16,)),
+        "layers.0.attn.k_norm.weight": mx.random.normal(shape=(16,)),
+        "lm_head.weight": mx.random.normal(shape=(128, 32)),
+    }
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=32))
+    assert isinstance(result["layers.0.attn.q_norm.weight"], mx.array)
+    assert isinstance(result["layers.0.attn.k_norm.weight"], mx.array)
+    assert isinstance(result["lm_head.weight"], QuantizedWeight)
+
+
+def test_quantize_weights_tied_lm_head_does_not_quantize_embed_tokens():
+    embed = mx.random.normal(shape=(_TQ_V, _TQ_D))
+    weights: dict[str, mx.array] = {
+        "embed_tokens.weight": embed,
+        "lm_head.weight": embed,  # Llama tied embedding — same array object
+        "final_norm.weight": mx.random.normal(shape=(_TQ_D,)),
+    }
+    assert weights["lm_head.weight"] is weights["embed_tokens.weight"]
+
+    result = quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+
+    assert isinstance(result["lm_head.weight"], QuantizedWeight)
+    assert isinstance(result["embed_tokens.weight"], mx.array)
+    assert result["embed_tokens.weight"] is embed  # original array untouched
+
+
+def test_quantize_weights_rejects_non_divisible_in_features():
+    # in_features=48, group_size=64 → 48 % 64 != 0; must fail with key name and values.
+    weights = {"lm_head.weight": mx.random.normal(shape=(_TQ_V, 48))}
+    with pytest.raises(ValueError, match=r"in_features=48.*group_size=64"):
+        quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+
+
+def test_quantize_weights_rejects_non_divisible_in_features_names_key():
+    weights = {"layers.0.attn.q_proj.weight": mx.random.normal(shape=(_TQ_D, 48))}
+    with pytest.raises(ValueError, match="q_proj.weight"):
+        quantize_weights(weights, QuantizationConfig(bits=4, group_size=64))
+
+
+def test_quantize_weights_quantized_weight_metadata():
+    weights = {"lm_head.weight": mx.random.normal(shape=(_TQ_V, _TQ_D))}
+    config = QuantizationConfig(bits=4, group_size=64)
+    result = quantize_weights(weights, config)
+    qw = result["lm_head.weight"]
+    assert isinstance(qw, QuantizedWeight)
+    assert qw.out_features == _TQ_V
+    assert qw.in_features == _TQ_D
+    assert qw.bits == 4
+    assert qw.group_size == 64
+    assert qw.mode == "affine"
+
+
+def test_quantize_weights_int8():
+    weights = {"lm_head.weight": mx.random.normal(shape=(_TQ_V, _TQ_D))}
+    config = QuantizationConfig(bits=8, group_size=64)
+    result = quantize_weights(weights, config)
+    qw = result["lm_head.weight"]
+    assert isinstance(qw, QuantizedWeight)
+    assert qw.bits == 8
+
+
+def test_quantize_weights_bfloat16_input():
+    # Real safetensors weights arrive as bfloat16; quantize_weights must handle them.
+    weights = _make_llama_project_weights(dtype=mx.bfloat16)
+    config = QuantizationConfig(bits=4, group_size=64)
+    result = quantize_weights(weights, config)
+    assert isinstance(result["lm_head.weight"], QuantizedWeight)
+    assert isinstance(result["layers.0.attn.q_proj.weight"], QuantizedWeight)
+    assert isinstance(result["embed_tokens.weight"], mx.array)

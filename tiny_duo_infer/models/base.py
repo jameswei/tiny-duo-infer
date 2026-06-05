@@ -48,7 +48,7 @@ class Module:
         """Subclasses implement the layer's computation here."""
         raise NotImplementedError(f"{type(self).__name__}.forward() is not implemented")
 
-    def load_weights(self, weights: dict[str, mx.array]) -> None:
+    def load_weights(self, weights: dict[str, mx.array | QuantizedWeight]) -> None:
         """
         Populate weight attributes from a flat dict of backend arrays.
 
@@ -57,8 +57,11 @@ class Module:
         A key with a dot is split on the first dot: the left part names a
         sub-module attribute, and the right part is forwarded recursively.
 
+        Values may be plain mx.array (full-precision path) or QuantizedWeight
+        (Phase 1.8 quantized path).  Linear.weight accepts both types.
+
         Args:
-            weights: flat dict mapping dot-path key → mx.array.
+            weights: flat dict mapping dot-path key → mx.array or QuantizedWeight.
 
         Raises:
             KeyError: if a dotted key names an attribute that is not a Module.
