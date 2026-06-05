@@ -13,18 +13,16 @@ Agents should read the relevant planning documents before changing code.
 
 Use this source-of-truth order:
 
-1. Active phase spec:
-   - Phase 1 completed under `docs/phases/phase-1-mlx-single-user.md`.
-   - Phase 1.5 Qwen3 work uses `docs/phases/phase-1.5-qwen3-mlx.md`.
-   - Phase 1.6 generation UX and serving work uses
-     `docs/phases/phase-1.6-generation-serving.md`.
-2. `docs/architecture.md`: active architecture reference and subsystem
+1. `docs/phases/README.md`: active phase pointer and completed/deferred phase
+   index.
+2. Active phase spec and taskboard named by `docs/phases/README.md`.
+3. `docs/architecture.md`: active architecture reference and subsystem
    boundaries.
-3. `docs/refined-plan.md`: settled project direction, roadmap, and
+4. `docs/refined-plan.md`: settled project direction, roadmap, and
    cross-review decisions.
-4. `docs/adr/*.md`: architecture decisions that should not be silently changed.
-5. Code and tests: implementation truth.
-6. Earlier proposal and review docs: historical context only, not current
+5. `docs/adr/*.md`: architecture decisions that should not be silently changed.
+6. Code and tests: implementation truth.
+7. Earlier proposal and review docs: historical context only, not current
    implementation contracts.
 
 If documents and code disagree, agents should not silently choose one. The agent
@@ -296,25 +294,16 @@ Agents should avoid:
 Agents should run the narrowest useful test set during development and broader
 tests before handoff.
 
-Expected Phase 1 / Phase 1.5 test categories:
+Use the active phase spec and taskboard named by `docs/phases/README.md` for
+phase-specific test expectations. In general, relevant tests include:
 
 - unit tests for config parsing, sampling, cache behavior, and engine state
 - shape tests for attention and KV-cache updates
+- request/response, CLI, serving, profiling, or context-policy tests when those
+  surfaces change
 - smoke test for local MLX generation when model artifacts are available
 
-Phase 1 minimum completion is M1.0 through M1.7 in
-`docs/phases/phase-1-mlx-single-user.md`. M1.8 probabilistic sampling is a
-Phase 1 extension unless a later phase spec or ADR makes it mandatory.
-
-Phase 1.5 Qwen3 work is tracked in
-`docs/phases/phase-1.5-taskboard.md` and governed by
-`docs/phases/phase-1.5-qwen3-mlx.md`.
-
-Phase 1.6 generation UX and serving work is tracked in
-`docs/phases/phase-1.6-taskboard.md` and governed by
-`docs/phases/phase-1.6-generation-serving.md`.
-
-Phase 1 and Phase 1.5 smoke tests should verify mechanical behavior only:
+Real-model smoke tests should verify mechanical behavior only:
 
 - local model artifacts load when available
 - generation completes without crashing
@@ -365,6 +354,8 @@ Unless a later ADR changes these defaults, agents should assume:
 - Qwen3 model-family support in Phase 1.5 before PyTorch/CUDA backend work
 - generation UX and single-request serving in Phase 1.6 before PyTorch/CUDA
   while the NVIDIA development environment is unavailable
+- observability and context-budget accounting in Phase 1.7 before PyTorch/CUDA
+  backend work
 - PyTorch/CUDA backend second
 - multi-user serving third
 - single-request execution in phase 1

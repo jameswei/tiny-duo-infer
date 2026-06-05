@@ -167,9 +167,13 @@ docs/
   refined-plan.md
   agent-guidelines.md
   phases/
+    README.md         — active phase pointer and completed/deferred phase index
     phase-1-mlx-single-user.md
+    phase-1-taskboard.md
     phase-1.5-qwen3-mlx.md
     phase-1.5-taskboard.md
+    phase-1.6-generation-serving.md
+    phase-1.6-taskboard.md
     phase-1.7-observability.md
     phase-1.7-taskboard.md
   adr/

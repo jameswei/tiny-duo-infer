@@ -3,16 +3,23 @@
 Before changing code, read the project docs in this order:
 
 1. `docs/file-structure.md`
-2. `docs/phases/phase-1-mlx-single-user.md`
-3. `docs/phases/phase-1-taskboard.md`
-4. `docs/phases/phase-1.5-qwen3-mlx.md`
-5. `docs/phases/phase-1.5-taskboard.md`
-6. `docs/phases/phase-1.6-generation-serving.md`
-7. `docs/phases/phase-1.6-taskboard.md`
-8. `docs/architecture.md`
-9. `docs/refined-plan.md`
-10. `docs/agent-guidelines.md`
+2. `docs/agent-guidelines.md`
+3. `docs/phases/README.md`
 
-Use the taskboard for the active phase to claim tasks, update status, record blockers, and mark review/done state. Phase 1 is tracked in `docs/phases/phase-1-taskboard.md`; Phase 1.5 is tracked in `docs/phases/phase-1.5-taskboard.md`; Phase 1.6 is tracked in `docs/phases/phase-1.6-taskboard.md`.
+If `docs/phases/README.md` names an active phase, also read that phase's spec
+and taskboard before changing code.
+
+If no phase is active, do not claim or start implementation work until the next
+phase scope is confirmed and a phase spec/taskboard exists.
+
+Read `docs/architecture.md` and `docs/refined-plan.md` when a task changes
+architecture, roadmap, public interfaces, or phase scope.
+
+Completed phase documents are historical references. Do not read every
+completed phase spec by default; use them only when the active phase, taskboard,
+or code change depends on that history.
+
+Use the active phase taskboard to claim tasks, update status, record blockers,
+and mark review/done state.
 
 `AGENTS.md` is only an entrypoint. Detailed rules, status, scope, review gates, and handoff expectations belong in the docs above.
