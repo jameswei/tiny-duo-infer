@@ -8,4 +8,4 @@ __pycache__/
 /models/
 *.safetensors
 # Active task whiteboard — ephemeral live state, not committed history
-CURRENT.md
+/CURRENT.md
