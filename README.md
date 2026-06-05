@@ -69,11 +69,31 @@ Additional flags (all models):
 |---|---|
 | `--stop TEXT` | Stop when TEXT appears in output (repeatable). |
 | `--seed N` | Seed for deterministic probabilistic sampling. |
-| `--show-stats` | Write a 14-field timing/memory/context stats block to stderr after generation. Generated text stays on stdout. |
+| `--show-stats` | Write a 21-field timing/memory/context/quantization stats block to stderr after generation. Generated text stays on stdout. |
 | `--context-policy POLICY` | How to handle prompts that exceed the context budget. Choices: `allow_context_stop` (default), `reject`, `truncate_left`, `truncate_right`, `reserve_generation`. |
+| `--quantization MODE` | Weight-only quantization mode applied at model load. Choices: `none` (default, full precision), `int4`, `int8`. |
+| `--quant-group-size N` | Quantization group size along the input dimension. Default `64`. Must evenly divide every quantized weight's `in_features`. |
 
 Llama-3.2-1B is a base completion model. Chat mode (`--chat` or `--message`)
 raises an error for Llama because it has no chat template.
+
+Run Llama with INT4 weight-only quantization (full-precision generation
+remains the default when `--quantization` is omitted):
+
+```bash
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/llama-3.2-1b \
+  --prompt "The capital of France is" \
+  --max-new-tokens 32 \
+  --temperature 0.0 \
+  --quantization int4 \
+  --quant-group-size 64 \
+  --show-stats
+```
+
+`--show-stats` reports the quantization mode and linear-weight memory
+(`linear_weight_full_precision_bytes` vs `linear_weight_runtime_bytes`)
+alongside timing, KV-cache memory, and context-budget accounting.
 
 ## HTTP Server
 
@@ -85,6 +105,17 @@ uv run python -m tiny_duo_infer.serving.api \
   --max-seq-len 2048
 ```
 
+The HTTP entrypoint also accepts `--quantization {none,int4,int8}` and
+`--quant-group-size N`. The engine is loaded inside the worker thread so
+quantized weights stay on the MLX GPU stream that owns generation:
+
+```bash
+uv run python -m tiny_duo_infer.serving.api \
+  --model-path ./models/qwen3-0.6b \
+  --max-seq-len 2048 \
+  --quantization int8
+```
+
 Full-response generation (JSON):
 
 ```bash
@@ -93,9 +124,10 @@ curl -s http://127.0.0.1:8000/generate \
   -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0, "context_policy": "allow_context_stop"}'
 ```
 
-The response JSON includes a `stats` field with the full 19-field stats object
-(timing, token-budget, KV-cache memory, context policy). The CLI `--show-stats`
-prints a 14-field summary to stderr; HTTP exposes all fields.
+The response JSON includes a `stats` field with the full 26-field stats
+object (timing, token-budget, KV-cache memory, context policy, and
+weight-only quantization metadata). The CLI `--show-stats` prints a
+21-field summary to stderr; HTTP exposes all fields.
 
 Streaming generation (NDJSON, one JSON object per line):
 
@@ -140,10 +172,16 @@ Key flags:
 | `--runs N` | Number of timed runs per prompt (default 3). |
 | `--warmup-runs N` | Warmup runs to exclude from summary (default 1). |
 | `--context-policy POLICY` | Context-budget policy applied to every request. |
+| `--quantization MODE` | Weight-only quantization mode (`none`, `int4`, `int8`). Same flag as the CLI/HTTP entrypoints; lets one prompt set compare full-precision against INT8/INT4 runs. |
+| `--quant-group-size N` | Group size for quantized runs. Default `64`. |
 | `--json` | Emit a machine-readable JSON report to stdout (silences progress output). |
 
 The summary reports `min`, `p50`, `p95`, and `max` for TTFT, decode
-throughput, and KV-cache active memory.
+throughput, and KV-cache active memory. JSON output is versioned with
+`schema_version=2`; v2 adds quantization mode and linear-weight memory
+totals (`linear_weight_full_precision_bytes`,
+`linear_weight_runtime_bytes`) to `engine_info` so full-precision and
+quantized runs can be diffed directly.
 
 ## Development Checks
 

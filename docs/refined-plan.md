@@ -72,8 +72,15 @@ settled:
 - Phase 1.7 observability established the measurement baseline needed before
   later optimization, quantization, batching, or backend comparison work.
 - Phase 1.8 focuses on weight-only quantization using MLX primitives. It should
-  preserve the project-owned `Linear` abstraction and use quantized matmul as
-  the normal runtime path.
+  preserve the project-owned `Linear` abstraction and use `mx.quantized_matmul`
+  as the normal runtime path. `mx.dequantize()` is allowed only as an explicit
+  test/debug fallback. Activation quantization, KV-cache quantization, and
+  offline quantized artifact formats remain out of scope.
+- Phase 1.8 introduces `--quantization {none,int4,int8}` and
+  `--quant-group-size N` on the CLI, HTTP server startup, and profiling
+  entrypoint. `Engine.from_model_path()` accepts an optional
+  `QuantizationConfig`. `GenerationStats` adds 7 quantization fields, and
+  the profiling JSON schema is bumped to v2.
 - Speculative decoding and minimal continuous batching are directional follow-up
   phases, not part of Phase 1.8.
 - PyTorch/CUDA remains useful for industry alignment but is deferred while the

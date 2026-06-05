@@ -1,10 +1,13 @@
 # Learning Roadmap
 
 This document is a guided reading order for the completed Phase 1, Phase 1.5,
-Phase 1.6, and Phase 1.7 engine. Use it to study how local Llama inference
-works first, then how the same engine was extended to Qwen3-0.6B, then how
-generation UX and HTTP serving were added, and finally how the engine was
-instrumented with observability.
+Phase 1.6, and Phase 1.7 engine, plus the Phase 1.8 weight-only quantization
+work that builds on top of it. Use it to study how local Llama inference works
+first, then how the same engine was extended to Qwen3-0.6B, then how
+generation UX and HTTP serving were added, then how the engine was
+instrumented with observability, and finally how MLX-native INT4/INT8 weight-only
+quantization fits into the same single-request runtime without changing the
+prefill/decode flow.
 
 Phase 1 is intentionally learning-first: the goal is not to hide inference
 behind a library, but to make the control flow, tensor shapes, KV-cache writes,
@@ -12,7 +15,9 @@ and sampling choices visible. Phase 1.5 adds a second model family so the next
 lesson is model portability: which pieces are engine-generic, and which pieces
 belong to a specific model architecture. Phase 1.6 adds request boundaries and
 serving structure. Phase 1.7 adds observability: how to measure what the engine
-is actually doing.
+is actually doing. Phase 1.8 adds weight-only quantization: how compressed
+linear weights, fused quantized matmul, and memory accounting plug into the
+same `Linear` abstraction.
 
 ## How To Read
 
@@ -475,7 +480,10 @@ Learn:
 
 Try:
 
-- Run a CLI call with `--show-stats` and read each of the 14 output lines.
+- Run a CLI call with `--show-stats` and read each output line. Phase 1.7
+  introduced a 14-line block; Phase 1.8 extends it to 21 lines by adding the
+  seven quantization fields covered in section 22. The non-quantization
+  lines are unchanged from the Phase 1.7 baseline.
 - Compute KV active bytes by hand for your prompt length and compare.
 - Explain why TTFT ≥ prefill_ms.
 
@@ -525,8 +533,11 @@ Learn:
 - How `percentile()` uses linear interpolation (numpy-default convention).
 - What `aggregate_runs()` returns: `min`, `p50`, `p95`, `max` for TTFT,
   decode throughput, and KV-cache active memory.
-- Why `--json` emits a stable schema (versioned with `schema_version=1`) and
-  silences progress output.
+- Why `--json` emits a stable, versioned schema and silences progress output.
+  Phase 1.7 shipped `schema_version=1`; Phase 1.8 bumped it to
+  `schema_version=2` to add quantization mode and linear-weight memory totals
+  to `engine_info` (see section 22). All other Phase 1.7 fields keep the
+  same names and shapes across the bump.
 - Why `decode_step_ms` is omitted from per-run JSON (T03 leaves it empty in
   non-profiling paths).
 - The stdout/stderr split: `--json` sends JSON to stdout; human mode sends the
@@ -538,7 +549,90 @@ Try:
 - Run with `--json` against a local model and inspect the schema.
 - Compare p50 TTFT vs. p50 total latency for a short prompt.
 
-### 22. Phase Handoffs And Real-Model Smoke
+### 22. Weight-Only Quantization
+
+Read:
+
+- `docs/phases/phase-1.8-weight-quantization.md`
+- `tiny_duo_infer/quantization.py`
+- `tiny_duo_infer/weights/quantizer.py`
+- `tiny_duo_infer/models/base.py` `Linear.forward()` quantized branch
+- `tiny_duo_infer/engine.py` `Engine.from_model_path(quantization=...)`
+- `tests/test_quantization.py`
+- `tests/test_quantization_integration.py`
+- `learning_materials/deep_dives/quantization.md`
+
+Learn:
+
+- Why Phase 1.8 is *weight-only* quantization: only matrix weights used by
+  `Linear` are quantized; activations, embeddings, RMSNorm/Q/K-norm weights,
+  and KV-cache buffers stay full precision.
+- Why MLX `mx.quantized_matmul()` is the required normal runtime path: the
+  fused kernel reads packed integers and per-group scales/biases without
+  materializing the full-precision weight, which is the memory and bandwidth
+  benefit Phase 1.8 is teaching.
+- Why `mx.dequantize()` is allowed only as an explicit test/debug fallback:
+  eager dequantization at load time would convert compressed weights back to
+  full precision and erase the entire benefit.
+- What `QuantizationConfig` validates: `bits ∈ {4, 8}`, positive `group_size`,
+  `mode="affine"`, and `in_features % group_size == 0` for every eligible
+  matrix. Tiny Qwen3 fixtures with `d_model=32` must use `group_size=32`.
+- What `QuantizedWeight` stores: the packed `qweight`, per-group `scales`,
+  per-group `biases`, the bit width, group size, mode, original shape
+  `(out_features, in_features)`, and `original_nbytes` so memory accounting
+  can compare quantized runtime against the original full-precision size
+  without assuming a fixed dtype.
+- How `Linear.forward()` dispatches purely on `isinstance(self.weight, QuantizedWeight)`:
+  the full-precision path stays `x @ weight.T`; the quantized path calls
+  `mx.quantized_matmul()` with `transpose=True`.
+- Where `weights/quantizer.py` fits in the loading pipeline: step 3 of four
+  (load safetensors → HF-key conversion → quantize eligible Linear matrices →
+  `model.load_weights(...)`), so HF-key shape validation still runs before
+  quantization touches anything.
+- Which weights are eligible vs not: eligible includes `*.q_proj.weight`,
+  `*.k_proj.weight`, `*.v_proj.weight`, `*.o_proj.weight`,
+  `*.gate_proj.weight`, `*.up_proj.weight`, `*.down_proj.weight`, and exact
+  `lm_head.weight`; non-eligible includes `embed_tokens.weight`, all 1-D
+  tensors (RMSNorm weights, Qwen3 `q_norm`/`k_norm`), and any non-matrix
+  tensor.
+- Why Llama tied embeddings need careful handling: when `lm_head.weight` is
+  tied to `embed_tokens.weight`, quantizing `lm_head` must not mutate
+  `embed_tokens`. The new dict shape preserves that — embeddings stay full
+  precision while `lm_head` becomes a quantized projection.
+- What `LinearWeightStats` and `compute_linear_weight_stats()` count:
+  eligible Linear projection weights only. Embeddings and norms are excluded
+  by design so the comparison directly answers "how much did quantization
+  save on Linear weights?".
+- What seven new `GenerationStats` fields encode: `quantization_mode`,
+  `quantization_bits`, `quantization_group_size`, `quantized_linear_count`,
+  `full_precision_linear_count`, `linear_weight_full_precision_bytes`, and
+  `linear_weight_runtime_bytes`. When quantization is disabled, runtime
+  bytes equal full-precision bytes for the counted linear weights.
+- Why throughput is *measured* but not a hard pass/fail criterion:
+  quantized matmul performance depends on MLX kernels, group size, prompt
+  shape, and hardware state; the Phase 1.8 acceptance gate is reduced linear
+  weight memory, with throughput reported alongside.
+
+Try:
+
+- Build a tiny INT4 Llama engine via `tests/test_quantization_integration.py:_make_llama_engine`
+  and call `engine.generate_request(GenerationRequest(prompt="hi", max_new_tokens=2))`.
+  Inspect `resp.stats.quantization_*` and verify `linear_weight_runtime_bytes
+  < linear_weight_full_precision_bytes`.
+- Run `uv run python -m tiny_duo_infer.cli --model-path ./models/llama-3.2-1b
+  --prompt "The capital of France is" --max-new-tokens 8 --temperature 0.0
+  --quantization int8 --show-stats` and read each quantization line in the
+  stats block.
+- Compare full-precision and INT4 with the same prompt set:
+  `uv run python scripts/profile_generation.py --model-path ./models/llama-3.2-1b
+   --runs 5 --warmup-runs 1 --quantization int4 --json` and diff against the
+  same command without `--quantization`.
+- Predict on paper: for an `(out=2048, in=2048)` weight at `bits=4` with
+  `group_size=64`, how many bytes does `qweight` occupy? Compare against
+  the full-precision bfloat16 size. Then check the answer with
+  `compute_linear_weight_stats()`.
+
+### 23. Phase Handoffs And Real-Model Smoke
 
 Read:
 
@@ -548,6 +642,8 @@ Read:
 - `docs/phases/phase-1.5-taskboard.md`
 - `docs/phases/phase-1.7-observability.md`
 - `docs/phases/phase-1.7-taskboard.md`
+- `docs/phases/phase-1.8-weight-quantization.md`
+- `docs/phases/phase-1.8-taskboard.md`
 
 Learn:
 
@@ -558,7 +654,11 @@ Learn:
 - How the real-model smoke exposed the bfloat16 loader issue.
 - How Phase 1.5 verified model-family portability before backend portability.
 - What Phase 1.7 added as a measurement baseline for future phases.
-- What remains out of scope until later phases.
+- What Phase 1.8 added: in-memory weight-only INT4/INT8 quantization, the
+  seven new `GenerationStats` quantization fields, and the v2 profiling
+  schema for direct full-precision-vs-quantized comparison.
+- What remains out of scope until later phases (activation/KV-cache
+  quantization, speculative decoding, continuous batching, CUDA backend).
 
 Try:
 
@@ -627,12 +727,17 @@ generated token
 21. `tiny_duo_infer/profiling.py`
 22. `tiny_duo_infer/serving/worker.py`
 23. `tiny_duo_infer/serving/api.py`
-24. `scripts/benchmark.py`
-25. `scripts/profile_generation.py`
-26. Matching `tests/` files in the same order
-27. `docs/phases/phase-1-handoff.md`
-28. `docs/phases/phase-1.5-qwen3-mlx.md`
-29. `docs/phases/phase-1.7-observability.md`
+24. `tiny_duo_infer/quantization.py`
+25. `tiny_duo_infer/weights/quantizer.py`
+26. `scripts/benchmark.py`
+27. `scripts/profile_generation.py`
+28. Matching `tests/` files in the same order, plus
+    `tests/test_quantization.py` and `tests/test_quantization_integration.py`
+29. `docs/phases/phase-1-handoff.md`
+30. `docs/phases/phase-1.5-qwen3-mlx.md`
+31. `docs/phases/phase-1.7-observability.md`
+32. `docs/phases/phase-1.8-weight-quantization.md`
+33. `learning_materials/deep_dives/quantization.md`
 
 ## What To Write Down
 

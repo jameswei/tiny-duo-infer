@@ -79,14 +79,21 @@ first.
 | KV cache | buffer allocation, position tracking, `update()`/`advance()` protocol | backend array ops |
 | Sampling | greedy argmax, temperature scaling, top-k filter, top-p nucleus | `mx.argmax` or NumPy |
 | Weight loading | HF key mapping, shape validation, tied-embedding handling | `safetensors` |
+| Weight quantization | eligibility (only `Linear` matrix weights), `QuantizedWeight` representation, linear-weight memory accounting, `Linear.forward()` dispatch | `mx.quantize`, `mx.quantized_matmul` (Phase 1.8) |
 | Tokenizer | thin wrapper exposing `encode`/`decode`/`bos_token_id`/`eos_token_id` | `tokenizers` package |
 
 **Explicitly prohibited:**
 
-- `mlx.nn.MultiHeadAttention`, `mlx.nn.RMSNorm`, `mlx.nn.SiLU`, `mlx.nn.Linear`
+- `mlx.nn.MultiHeadAttention`, `mlx.nn.RMSNorm`, `mlx.nn.SiLU`, `mlx.nn.Linear`,
+  `mlx.nn.QuantizedLinear`, `mlx.nn.quantize()`
 - `transformers.AutoModelForCausalLM` or any `transformers` generation API
 - `mlx-lm` as the core engine
 - Any framework layer that hides the inference concept being learned
+
+**Phase 1.8 quantization rule:** the quantized runtime path uses
+`mx.quantized_matmul()`. `mx.dequantize()` is allowed only as an explicit
+test/debug fallback — eager dequantization at load time would erase the
+memory benefit and is rejected by the spec.
 
 ---
 
@@ -107,6 +114,7 @@ tiny_duo_infer/
   context_policy.py   — apply_context_policy(): accept/truncate/reject logic, ContextPolicyOutcome
   prompt.py           — format_chat_prompt(): ChatML template for Qwen3
   profiling.py        — profiling helpers: percentile, aggregate_runs, run_profile
+  quantization.py     — QuantizationConfig (bits/group_size/mode) and QuantizedWeight (Phase 1.8)
 
   backends/
     __init__.py
@@ -133,6 +141,7 @@ tiny_duo_infer/
     loader.py         — safetensors shard loading → mx.array / torch.Tensor
     llama_converter.py — HF key mapping, shape validation, tied-embedding
     qwen3_converter.py — Qwen3 HF key mapping and shape validation
+    quantizer.py      — quantize_weights(): eligible-Linear quantization step + LinearWeightStats (Phase 1.8)
 
   tokenizer/
     __init__.py
@@ -161,6 +170,8 @@ tests/
   test_engine.py
   test_context_policy.py
   test_profiling.py
+  test_quantization.py
+  test_quantization_integration.py — Phase 1.8 tiny Llama/Qwen3 fp/INT8/INT4 generation
 
 docs/
   architecture.md     — this file
@@ -185,26 +196,28 @@ docs/
 
 | File | Responsibility |
 |---|---|
-| `engine.py` | Public `Engine.from_model_path()` API; orchestrates prefill → decode loop; instruments timing and KV bytes; attaches `GenerationStats` to every response |
+| `engine.py` | Public `Engine.from_model_path(..., quantization=None)` API; orchestrates prefill → decode loop; instruments timing, KV bytes, and quantization linear-weight memory; attaches `GenerationStats` to every response |
 | `cache.py` | Pre-allocated K/V buffers; `update()` writes per layer; `advance()` commits one token step |
 | `sampling.py` | Stateless sampling functions; operates on `(vocab_size,)` logits |
-| `cli.py` | Thin CLI wrapper over `Engine`; `--show-stats` writes 14-field block to stderr; `--context-policy` forwarded to `GenerationRequest` |
+| `cli.py` | Thin CLI wrapper over `Engine`; `--show-stats` writes 21-field block to stderr; `--context-policy`, `--quantization`, `--quant-group-size` forwarded to engine load and `GenerationRequest` |
 | `config.py` | Reads `config.json`; returns a typed config object used by model and cache constructors |
-| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse`, `GenerationStats`; `ContextPolicy` literal + `_VALID_CONTEXT_POLICIES`; `kv_cache_bytes()` formula |
+| `generation.py` | `ChatMessage`, `GenerationRequest`, `GenerationResponse`, `GenerationStats` (incl. 7 quantization fields); `ContextPolicy` literal + `_VALID_CONTEXT_POLICIES`; `kv_cache_bytes()` formula |
 | `context_policy.py` | `apply_context_policy()`: enforces accept/truncate/reject before prefill; `ContextBudgetError`, `ContextPolicyOutcome` |
 | `prompt.py` | `format_chat_prompt()`; ChatML template for Qwen3; raises `ValueError` for Llama |
-| `profiling.py` | `percentile()`, `aggregate_runs()`, `run_profile()`; used by `scripts/profile_generation.py` |
+| `profiling.py` | `percentile()`, `aggregate_runs()`, `run_profile()`; v2 JSON schema with quantization mode and linear-weight memory; used by `scripts/profile_generation.py` |
+| `quantization.py` | `QuantizationConfig` (bits/group_size/mode) and `QuantizedWeight` (packed weight + scales/biases + shape metadata); consumed by `Linear.forward()` via `mx.quantized_matmul` |
 | `backends/protocol.py` | `Backend` typing Protocol; defines Tier-1 op signatures |
-| `models/base.py` | `Module` ABC with `load_weights(flat_dict)`; `Linear`, `Embedding` |
+| `models/base.py` | `Module` ABC with `load_weights(flat_dict)`; `Linear` (dispatches between `x @ weight.T` and `mx.quantized_matmul()` based on `weight` type), `Embedding` |
 | `models/llama.py` | `LlamaBlock`, `LlamaModel`; assembles layers into the full model |
 | `models/qwen3.py` | `Qwen3Block`, `Qwen3Model`; Qwen3 assembly with Q/K-normalized attention |
 | `layers/attention.py` | `LlamaAttention`; contains all GQA and RoPE logic |
 | `layers/rope.py` | `precompute_freqs()`, `apply_rope()`; called at model init and each forward |
 | `weights/llama_converter.py` | HF key → project key mapping; tied embedding handling; shape assertions |
 | `weights/qwen3_converter.py` | Qwen3 HF key → project key mapping; Q/K norm and projection shape assertions |
+| `weights/quantizer.py` | `quantize_weights()` step 3 of model loading: replaces eligible Linear matrix weights with `QuantizedWeight` via `mx.quantize()`; `LinearWeightStats` and `compute_linear_weight_stats()` for memory accounting (embeddings/norms excluded) |
 | `tokenizer/loader.py` | `Tokenizer.from_pretrained()`; wraps `tokenizers` package |
-| `serving/worker.py` | `InferenceWorker`: runs engine on a dedicated thread for MLX GPU stream affinity; `submit_generate()` / `submit_stream()` |
-| `serving/api.py` | FastAPI app: `/health`, `/generate` (JSON + stats), `/generate/stream` (NDJSON + final stats); `context_policy` in request body |
+| `serving/worker.py` | `InferenceWorker`: runs engine on a dedicated thread for MLX GPU stream affinity; accepts `quantization` and forwards it into `Engine.from_model_path()` from the worker thread; `submit_generate()` / `submit_stream()` |
+| `serving/api.py` | FastAPI app: `/health`, `/generate` (JSON + stats), `/generate/stream` (NDJSON + final stats); `context_policy` in request body; startup CLI accepts `--quantization` and `--quant-group-size` |
 
 ---
 
@@ -423,11 +436,12 @@ Phase 1.6, Phase 1.7, and Phase 1.8 fit between Phase 1.5 and Phase 2:
 | Concurrency | one active request per process | same | same |
 | KV cache | pre-allocated static | same + KV bytes accounting | same |
 | Scheduling | none; lock or busy response only | same | same |
-| Serving | refined CLI + single-request HTTP API | same + stats and context_policy | same + quantized load option |
+| Serving | refined CLI + single-request HTTP API | same + stats and context_policy | same + `--quantization` / `--quant-group-size` on CLI and HTTP startup |
 | Streaming | expose existing generation iterator | same + stats on final chunk | same |
 | Prompting | plain prompt + simple chat formatting | same | same |
-| Observability | none | timing (TTFT, prefill, decode, total), KV memory, context-budget policy | same + quantization memory reporting |
-| Weights | bfloat16 full precision | same | optional INT4/INT8 weight-only quantized linear weights |
+| Observability | none | timing (TTFT, prefill, decode, total), KV memory, context-budget policy | same + 7 quantization stats fields (mode/bits/group_size, quantized vs full-precision linear counts, full-precision vs runtime linear-weight bytes) |
+| Weights | bfloat16 full precision | same | optional INT4/INT8 weight-only affine quantization on `q/k/v/o_proj`, `gate/up/down_proj`, `lm_head`; embeddings and RMSNorm/Q/K-norm weights stay full precision |
+| Profiling | n/a | `scripts/profile_generation.py` v1 schema | v2 schema adds quantization mode and linear-weight memory totals |
 
 ---
 
@@ -441,7 +455,13 @@ implementation proposals requires an ADR.
   Phase 1.5; Phase 1.6 may add simple chat prompt formatting, but not
   Transformers `apply_chat_template()` parity or conversation memory
 - Training or fine-tuning — all phases
-- Quantization (INT8/INT4 weights)
-- Speculative decoding
+- Activation quantization, KV-cache quantization, GPTQ/AWQ/SmoothQuant,
+  quantization-aware training, calibration pipelines, offline quantized
+  artifact formats, and eager dequantization at load time. Phase 1.8 covers
+  in-memory weight-only INT4/INT8 affine quantization for `Linear` matrices
+  only.
+- Speculative decoding (directional Phase 1.9 follow-up; not yet active)
+- Continuous batching and multiple active model requests (directional
+  Phase 1.10 follow-up; not yet active)
 - Distributed inference (tensor parallelism, pipeline parallelism)
 - Wrapping `mlx-lm`, vLLM, or `transformers` as the engine core
