@@ -10,6 +10,7 @@ from __future__ import annotations
 import mlx.core as mx
 import pytest
 
+from tiny_duo_infer.models.base import Linear
 from tiny_duo_infer.quantization import QuantizationConfig, QuantizedWeight
 from tiny_duo_infer.generation import GenerationStats
 
@@ -64,6 +65,29 @@ def _make_quantized_weight(
         out_features=out_features,
         in_features=in_features,
     )
+
+
+def _make_quantized_linear(
+    out_features: int = 8,
+    in_features: int = 64,
+    group_size: int = 32,
+    bits: int = 4,
+) -> tuple[Linear, mx.array]:
+    """Return a Linear with a QuantizedWeight and the original full-precision weight."""
+    linear = Linear(in_features=in_features, out_features=out_features)
+    w = mx.random.normal(shape=(out_features, in_features))
+    qweight, scales, biases = mx.quantize(w, group_size=group_size, bits=bits)
+    linear.weight = QuantizedWeight(
+        qweight=qweight,
+        scales=scales,
+        biases=biases,
+        bits=bits,
+        group_size=group_size,
+        mode="affine",
+        out_features=out_features,
+        in_features=in_features,
+    )
+    return linear, w
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +250,147 @@ def test_generation_stats_rejects_invalid_quantization_mode():
 def test_generation_stats_rejects_empty_quantization_mode():
     with pytest.raises(ValueError, match="quantization_mode must be one of"):
         _make_stats(quantization_mode="")
+
+
+# ---------------------------------------------------------------------------
+# Linear.forward() — full-precision path unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_linear_full_precision_path_shape():
+    linear = Linear(in_features=16, out_features=8)
+    linear.weight = mx.random.normal(shape=(8, 16))
+    x = mx.random.normal(shape=(2, 16))
+    y = linear(x)
+    mx.eval(y)
+    assert y.shape == (2, 8)
+
+
+def test_linear_full_precision_path_values():
+    linear = Linear(in_features=4, out_features=3)
+    w = mx.array([[1.0, 0.0, 0.0, 0.0],
+                  [0.0, 1.0, 0.0, 0.0],
+                  [0.0, 0.0, 1.0, 0.0]])
+    linear.weight = w
+    x = mx.array([[2.0, 3.0, 5.0, 7.0]])
+    y = linear(x)
+    mx.eval(y)
+    # y = x @ w.T — first three elements of x, last element dropped
+    assert y.shape == (1, 3)
+    assert abs(float(y[0, 0]) - 2.0) < 1e-5
+    assert abs(float(y[0, 1]) - 3.0) < 1e-5
+    assert abs(float(y[0, 2]) - 5.0) < 1e-5
+
+
+def test_linear_full_precision_path_3d_input():
+    linear = Linear(in_features=16, out_features=8)
+    linear.weight = mx.random.normal(shape=(8, 16))
+    x = mx.random.normal(shape=(2, 5, 16))
+    y = linear(x)
+    mx.eval(y)
+    assert y.shape == (2, 5, 8)
+
+
+# ---------------------------------------------------------------------------
+# Linear.forward() — quantized path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bits,group_size", [(4, 32), (8, 32)])
+def test_linear_quantized_path_output_shape(bits, group_size):
+    out_f, in_f = 8, 64
+    linear, _ = _make_quantized_linear(out_f, in_f, group_size=group_size, bits=bits)
+    x = mx.random.normal(shape=(3, in_f))
+    y = linear(x)
+    mx.eval(y)
+    assert y.shape == (3, out_f)
+
+
+def test_linear_quantized_path_3d_input():
+    linear, _ = _make_quantized_linear(out_features=8, in_features=64)
+    x = mx.random.normal(shape=(2, 5, 64))
+    y = linear(x)
+    mx.eval(y)
+    assert y.shape == (2, 5, 8)
+
+
+def test_linear_quantized_path_preserves_in_out_features():
+    linear, _ = _make_quantized_linear(out_features=16, in_features=64)
+    assert linear.in_features == 64
+    assert linear.out_features == 16
+
+
+def test_linear_quantized_path_matches_dequantized_reference_int4():
+    # mx.quantized_matmul and x @ mx.dequantize().T compute the same operation.
+    # Tolerance is loose because float32 accumulation order may differ slightly.
+    out_f, in_f, gs, bits = 8, 64, 32, 4
+    linear, _ = _make_quantized_linear(out_f, in_f, group_size=gs, bits=bits)
+    qw = linear.weight
+    x = mx.random.normal(shape=(4, in_f))
+
+    y_quant = linear(x)
+    w_deq = mx.dequantize(qw.qweight, qw.scales, qw.biases, group_size=gs, bits=bits)
+    y_ref = x @ w_deq.T
+    mx.eval(y_quant, y_ref)
+
+    diff = mx.abs(y_quant - y_ref)
+    assert float(diff.max()) < 1e-3, (
+        f"quantized_matmul vs dequantized ref max diff: {float(diff.max())}"
+    )
+
+
+def test_linear_quantized_path_matches_dequantized_reference_int8():
+    out_f, in_f, gs, bits = 8, 64, 32, 8
+    linear, _ = _make_quantized_linear(out_f, in_f, group_size=gs, bits=bits)
+    qw = linear.weight
+    x = mx.random.normal(shape=(4, in_f))
+
+    y_quant = linear(x)
+    w_deq = mx.dequantize(qw.qweight, qw.scales, qw.biases, group_size=gs, bits=bits)
+    y_ref = x @ w_deq.T
+    mx.eval(y_quant, y_ref)
+
+    diff = mx.abs(y_quant - y_ref)
+    assert float(diff.max()) < 1e-3
+
+
+def test_linear_full_precision_path_not_affected_by_quantization_import():
+    # Importing QuantizedWeight must not change the full-precision path output.
+    linear = Linear(in_features=8, out_features=4)
+    w = mx.ones(shape=(4, 8))
+    linear.weight = w
+    x = mx.ones(shape=(1, 8))
+    y = linear(x)
+    mx.eval(y)
+    # y = x @ w.T = [[8, 8, 8, 8]]
+    assert y.shape == (1, 4)
+    assert abs(float(y[0, 0]) - 8.0) < 1e-5
+
+
+def test_linear_load_weights_accepts_quantized_weight():
+    # load_weights() routes "weight" directly to setattr; QuantizedWeight should work.
+    linear = Linear(in_features=64, out_features=8)
+    qw = _make_quantized_weight(out_features=8, in_features=64)
+    linear.load_weights({"weight": qw})
+    assert isinstance(linear.weight, QuantizedWeight)
+
+
+def test_linear_quantized_forward_rejects_out_features_mismatch():
+    # Linear(out=4) but QuantizedWeight(out=8) — forward() must raise before matmul.
+    linear = Linear(in_features=64, out_features=4)
+    linear.weight = _make_quantized_weight(out_features=8, in_features=64)
+    x = mx.random.normal(shape=(2, 64))
+    with pytest.raises(ValueError, match="does not match Linear dimensions"):
+        linear(x)
+
+
+def test_linear_quantized_forward_rejects_in_features_mismatch():
+    # Linear(in=64) but QuantizedWeight(in=32) — forward() must raise before matmul.
+    linear = Linear(in_features=64, out_features=8)
+    linear.weight = _make_quantized_weight(out_features=8, in_features=32)
+    x = mx.random.normal(shape=(2, 64))
+    with pytest.raises(ValueError, match="does not match Linear dimensions"):
+        linear(x)
 
 
 # ---------------------------------------------------------------------------

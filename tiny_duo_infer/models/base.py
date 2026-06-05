@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import mlx.core as mx
 
+from tiny_duo_infer.quantization import QuantizedWeight
+
 
 class Module:
     """
@@ -77,16 +79,24 @@ class Module:
 
 class Linear(Module):
     """
-    Linear projection: y = x @ weight.T
+    Linear projection: y = x @ weight.T  (full-precision path)
+                       y = mx.quantized_matmul(x, ...)  (quantized path)
 
-    No bias in Llama. Weight stored as (out_features, in_features) following
-    HuggingFace convention; the .T transpose is applied on every forward call.
+    Phase 1.8 adds weight-only quantization.  When self.weight holds a
+    QuantizedWeight (set by the weight-conversion step at model load time),
+    forward() calls mx.quantized_matmul() with the packed weight, scales,
+    and biases.  The full-precision path is unchanged.
 
-    This is a thin wrapper — the real learning is in the layers that use it
-    (attention projections, FFN projections, lm_head).
+    The choice of path is determined purely by the type of self.weight:
+      - mx.array        → full-precision: y = x @ weight.T
+      - QuantizedWeight → quantized:      y = mx.quantized_matmul(x, qw, ...)
+
+    No bias in Llama or Qwen3.  Weight stored as (out_features, in_features)
+    following HuggingFace convention.
 
     Attributes:
-        weight: (out_features, in_features) mx.array, set by load_weights().
+        weight: (out_features, in_features) mx.array  OR  QuantizedWeight,
+                set by load_weights().
     """
 
     def __init__(self, in_features: int, out_features: int) -> None:
@@ -94,7 +104,8 @@ class Linear(Module):
         Record dimensions and initialise weight to None.
 
         Weight is not allocated here — it is populated via load_weights()
-        from the safetensors checkpoint.
+        from the safetensors checkpoint (full-precision path) or from the
+        quantization step in the weight converter (quantized path).
 
         Args:
             in_features:  input dimension (columns of weight matrix).
@@ -102,15 +113,43 @@ class Linear(Module):
         """
         self.in_features = in_features
         self.out_features = out_features
-        self.weight: mx.array | None = None  # (out_features, in_features)
+        self.weight: mx.array | QuantizedWeight | None = None
 
     def forward(self, x: mx.array) -> mx.array:
         """
+        Project x through the weight matrix.
+
+        Dispatches to mx.quantized_matmul() when self.weight is a
+        QuantizedWeight; otherwise falls back to the plain matmul.
+
+        Both paths produce output shaped (..., out_features).
+
         Args:
             x: (..., in_features)
         Returns:
-            (..., out_features)  — computed as x @ weight.T
+            (..., out_features)
         """
+        if isinstance(self.weight, QuantizedWeight):
+            qw = self.weight
+            if qw.in_features != self.in_features or qw.out_features != self.out_features:
+                raise ValueError(
+                    f"QuantizedWeight shape ({qw.out_features}, {qw.in_features}) "
+                    f"does not match Linear dimensions "
+                    f"(out={self.out_features}, in={self.in_features})."
+                )
+            # mx.quantized_matmul computes x @ dequantize(qw).T without
+            # materialising the full-precision weight matrix — this is the
+            # memory and bandwidth benefit of weight-only quantization.
+            return mx.quantized_matmul(
+                x,
+                qw.qweight,
+                qw.scales,
+                qw.biases,
+                transpose=True,
+                group_size=qw.group_size,
+                bits=qw.bits,
+                mode=qw.mode,
+            )
         return x @ self.weight.T
 
 
