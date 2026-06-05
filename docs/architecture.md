@@ -176,6 +176,8 @@ docs/
     phase-1.6-taskboard.md
     phase-1.7-observability.md
     phase-1.7-taskboard.md
+    phase-1.8-weight-quantization.md
+    phase-1.8-taskboard.md
   adr/
 ```
 
@@ -327,7 +329,9 @@ Phase 1 targets `meta-llama/Llama-3.2-1B` (base model). Phase 1.5 adds
 portability before Phase 2 introduces backend portability. Phase 1.6 adds
 generation UX and single-request local serving. Phase 1.7 adds observability:
 `GenerationStats` with per-request timing, KV-cache memory accounting, and
-context-budget policy enforcement via `apply_context_policy()`.
+context-budget policy enforcement via `apply_context_policy()`. Phase 1.8 adds
+MLX-native weight-only quantization while preserving the same model families and
+single-request runtime.
 
 ### Llama-3.2-1B
 
@@ -411,18 +415,19 @@ vocab_size: int
 | Sampling | greedy → top-k/p/temp | same | same | same |
 | Model | Llama-3.2-1B (base) | + Qwen3-0.6B | same supported models | same supported models |
 
-Phase 1.6 and Phase 1.7 fit between Phase 1.5 and Phase 2:
+Phase 1.6, Phase 1.7, and Phase 1.8 fit between Phase 1.5 and Phase 2:
 
-| Concern | Phase 1.6 | Phase 1.7 |
-|---|---|---|
-| Backend | MLX (direct) | MLX (direct) |
-| Concurrency | one active request per process | same |
-| KV cache | pre-allocated static | same + KV bytes accounting |
-| Scheduling | none; lock or busy response only | same |
-| Serving | refined CLI + single-request HTTP API | same + stats and context_policy |
-| Streaming | expose existing generation iterator | same + stats on final chunk |
-| Prompting | plain prompt + simple chat formatting | same |
-| Observability | none | timing (TTFT, prefill, decode, total), KV memory, context-budget policy |
+| Concern | Phase 1.6 | Phase 1.7 | Phase 1.8 |
+|---|---|---|---|
+| Backend | MLX (direct) | MLX (direct) | MLX (direct) |
+| Concurrency | one active request per process | same | same |
+| KV cache | pre-allocated static | same + KV bytes accounting | same |
+| Scheduling | none; lock or busy response only | same | same |
+| Serving | refined CLI + single-request HTTP API | same + stats and context_policy | same + quantized load option |
+| Streaming | expose existing generation iterator | same + stats on final chunk | same |
+| Prompting | plain prompt + simple chat formatting | same | same |
+| Observability | none | timing (TTFT, prefill, decode, total), KV memory, context-budget policy | same + quantization memory reporting |
+| Weights | bfloat16 full precision | same | optional INT4/INT8 weight-only quantized linear weights |
 
 ---
 

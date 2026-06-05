@@ -43,7 +43,7 @@ contracts belong in `docs/phases/`, and collaboration rules belong in
 | `docs/file-structure.md` | This navigation map. |
 | `docs/refined-plan.md` | Project strategy: purpose, roadmap status, durable decisions, and phase rationale. |
 | `docs/phases/README.md` | Phase index: active phase pointer, completed phases, and deferred phases. |
-| `docs/phases/` | Phase specs, taskboards, and handoffs. Completed phase docs are historical unless the active phase depends on them. |
+| `docs/phases/` | Phase specs, taskboards, and handoffs, including active Phase 1.8 quantization docs. Completed phase docs are historical unless the active phase depends on them. |
 | `docs/adr/` | Durable architecture decisions, if introduced. |
 
 ## Learning Materials

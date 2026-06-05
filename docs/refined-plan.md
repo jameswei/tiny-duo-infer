@@ -38,7 +38,9 @@ performance.
 | Phase 1.5 | Qwen3-0.6B support on the same MLX backend | Done | `docs/phases/phase-1.5-qwen3-mlx.md` |
 | Phase 1.6 | CLI UX and single-request HTTP serving | Done | `docs/phases/phase-1.6-generation-serving.md` |
 | Phase 1.7 | Timing, KV-cache memory, and context-budget observability | Done | `docs/phases/phase-1.7-observability.md` |
-| Next phase | Not yet selected | Planning | `docs/phases/README.md` |
+| Phase 1.8 | MLX-native weight-only quantization | Active | `docs/phases/phase-1.8-weight-quantization.md` |
+| Phase 1.9 | Speculative decoding | Directional | no active implementation contract |
+| Phase 1.10 | Minimal continuous batching | Directional | no active implementation contract |
 | Phase 2 | PyTorch/CUDA backend for NVIDIA GPUs | Deferred | no active implementation contract |
 | Phase 3 | Multi-user serving concepts | Future | no active implementation contract |
 
@@ -69,6 +71,11 @@ settled:
   scheduler was introduced.
 - Phase 1.7 observability established the measurement baseline needed before
   later optimization, quantization, batching, or backend comparison work.
+- Phase 1.8 focuses on weight-only quantization using MLX primitives. It should
+  preserve the project-owned `Linear` abstraction and use quantized matmul as
+  the normal runtime path.
+- Speculative decoding and minimal continuous batching are directional follow-up
+  phases, not part of Phase 1.8.
 - PyTorch/CUDA remains useful for industry alignment but is deferred while the
   NVIDIA development environment is unavailable.
 - Multi-user serving remains a later learning target after backend and
@@ -93,6 +100,12 @@ single-request HTTP API made the engine easier to exercise and review.
 Phase 1.7 added observability before optimization. Timing, throughput, KV-cache
 memory accounting, and context-budget policy make later changes measurable
 instead of anecdotal.
+
+Phase 1.8 adds weight-only quantization before speculative decoding or batching
+because it is the most contained next inference-engine feature with immediate
+single-request value. It teaches compressed weight storage, quantized linear
+matmul, memory accounting, and measured tradeoffs while keeping the existing
+single-request MLX engine structure.
 
 Phase 2 CUDA is deferred, not cancelled. It should resume when the NVIDIA
 development environment is reliable enough for implementation and verification.

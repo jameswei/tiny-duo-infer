@@ -2,7 +2,8 @@
 
 A tiny inference engine implementation for learning purposes. Phase 1 runs on
 Apple Silicon with MLX; later phases add model-family portability, generation
-UX, local serving, then a PyTorch/CUDA backend.
+UX, local serving, observability, weight-only quantization, then a PyTorch/CUDA
+backend.
 
 ## What It Is
 
@@ -18,7 +19,8 @@ UX, local serving, then a PyTorch/CUDA backend.
 | Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
 | Phase 1.6 | Refine CLI and support HTTP serving | Done |
 | Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done |
-| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Not started |
+| Phase 1.8 | MLX-native weight-only quantization | Active |
+| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred |
 | Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
 
 ## Model Targets

@@ -356,6 +356,8 @@ Unless a later ADR changes these defaults, agents should assume:
   while the NVIDIA development environment is unavailable
 - observability and context-budget accounting in Phase 1.7 before PyTorch/CUDA
   backend work
+- MLX-native weight-only quantization in Phase 1.8 before speculative decoding,
+  batching, or PyTorch/CUDA backend work
 - PyTorch/CUDA backend second
 - multi-user serving third
 - single-request execution in phase 1
