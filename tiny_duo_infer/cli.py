@@ -37,10 +37,11 @@ from tiny_duo_infer.generation import (
     GenerationResponse,
     GenerationStats,
 )
+from tiny_duo_infer.quantization import QuantizationConfig
 
-# Keep the CLI's policy choice list in lockstep with the spec and with the
-# `ContextPolicy` literal in `tiny_duo_infer.generation`. argparse uses this
-# tuple for both the `choices=` validation and the `--help` listing.
+# Keep these choice lists in lockstep with the spec and with the corresponding
+# literals in `tiny_duo_infer.generation` and `tiny_duo_infer.quantization`.
+# argparse uses them for both `choices=` validation and `--help` listing.
 _CONTEXT_POLICY_CHOICES: tuple[str, ...] = (
     "allow_context_stop",
     "reject",
@@ -48,6 +49,8 @@ _CONTEXT_POLICY_CHOICES: tuple[str, ...] = (
     "truncate_right",
     "reserve_generation",
 )
+
+_QUANTIZATION_CHOICES: tuple[str, ...] = ("none", "int4", "int8")
 
 
 def main(
@@ -115,6 +118,7 @@ def main(
     engine = engine_cls.from_model_path(
         Path(args.model_path),
         max_seq_len=args.max_seq_len,
+        quantization=_build_quantization_config(args),
     )
 
     response = engine.generate_request(request)
@@ -177,8 +181,20 @@ def _format_stats_lines(stats: GenerationStats) -> list[str]:
     ]
 
 
+def _build_quantization_config(args: argparse.Namespace) -> QuantizationConfig | None:
+    """Translate --quantization / --quant-group-size into a QuantizationConfig.
+
+    Returns None when quantization is disabled (the default), which keeps
+    Engine.from_model_path() on the full-precision path.
+    """
+    if args.quantization == "none":
+        return None
+    bits = 4 if args.quantization == "int4" else 8
+    return QuantizationConfig(bits=bits, group_size=args.quant_group_size)
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the Phase-1.6 text-generation argument parser."""
+    """Build the Phase-1.8 text-generation argument parser."""
     parser = argparse.ArgumentParser(
         prog="tiny-duo-infer",
         description="Generate text locally with tiny-duo-infer.",
@@ -277,6 +293,29 @@ def _build_parser() -> argparse.ArgumentParser:
             "still contains only the generated text). The block reports "
             "timing, token accounting, KV-cache memory, and the applied "
             "context policy, one key=value per line."
+        ),
+    )
+    parser.add_argument(
+        "--quantization",
+        choices=_QUANTIZATION_CHOICES,
+        default="none",
+        help=(
+            "Weight-only quantization mode. "
+            "none = full precision (default); "
+            "int4 = INT4 affine quantization; "
+            "int8 = INT8 affine quantization. "
+            "Invalid group sizes or non-divisible matrix shapes fail before generation."
+        ),
+    )
+    parser.add_argument(
+        "--quant-group-size",
+        type=_positive_int,
+        default=64,
+        help=(
+            "Quantization group size: elements per group along the input dimension. "
+            "Each group gets its own scale and bias. "
+            "Must evenly divide every quantized weight's input dimension. "
+            "Default: 64."
         ),
     )
     return parser

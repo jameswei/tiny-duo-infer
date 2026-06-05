@@ -36,10 +36,12 @@ from tiny_duo_infer.prompt import format_chat_prompt
 from tiny_duo_infer.models.base import Module
 from tiny_duo_infer.models.llama import LlamaModel
 from tiny_duo_infer.models.qwen3 import Qwen3Model
+from tiny_duo_infer.quantization import QuantizationConfig
 from tiny_duo_infer.sampling import sample
 from tiny_duo_infer.tokenizer.loader import Tokenizer
 from tiny_duo_infer.weights.llama_converter import convert as convert_llama
 from tiny_duo_infer.weights.loader import load_weights
+from tiny_duo_infer.weights.quantizer import quantize_weights
 from tiny_duo_infer.weights.qwen3_converter import convert as convert_qwen3
 
 
@@ -91,16 +93,21 @@ class Engine:
         cls,
         model_path: Path | str,
         max_seq_len: int = 2048,
+        quantization: QuantizationConfig | None = None,
     ) -> "Engine":
         """
         Load model weights and tokenizer from a local HuggingFace-compatible
         model directory.
 
         Args:
-            model_path:  path to a directory containing config.json,
-                         tokenizer.json, and safetensors weight shards.
-            max_seq_len: maximum total sequence length (prompt + generated).
-                         Must not exceed the model's RoPE context length.
+            model_path:    path to a directory containing config.json,
+                           tokenizer.json, and safetensors weight shards.
+            max_seq_len:   maximum total sequence length (prompt + generated).
+                           Must not exceed the model's RoPE context length.
+            quantization:  optional weight-only quantization config (Phase 1.8).
+                           When provided, eligible Linear weights are converted
+                           to QuantizedWeight objects after HF-key conversion.
+                           None (default) leaves all weights full precision.
         """
         model_dir = Path(model_path)
         config = load_config(model_dir)
@@ -115,6 +122,12 @@ class Engine:
         hf_weights = load_weights(model_dir)
         model_cls, converter = _model_class_and_converter(runtime_config)
         project_weights = converter(hf_weights, runtime_config)
+
+        # Phase 1.8: in-memory weight-only quantization.
+        # Runs after HF-key conversion so project keys are stable.
+        # Full-precision loading remains the default when quantization is None.
+        if quantization is not None:
+            project_weights = quantize_weights(project_weights, quantization)
 
         model = model_cls(runtime_config)
         model.load_weights(project_weights)

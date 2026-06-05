@@ -13,13 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from tiny_duo_infer.cli import main, _parse_message
+from tiny_duo_infer.cli import main, _parse_message, _build_quantization_config
 from tiny_duo_infer.generation import (
     ChatMessage,
     GenerationRequest,
     GenerationResponse,
     GenerationStats,
 )
+from tiny_duo_infer.quantization import QuantizationConfig
 
 
 def _make_fake_stats(**overrides) -> GenerationStats:
@@ -61,9 +62,13 @@ class _FakeEngine:
     pre-Phase-1.7 tests stay unchanged. Tests that exercise the `--show-stats`
     output path set `_FakeEngine.next_stats` (or `next_response`) before
     calling `main()` to inject a populated `GenerationStats`.
+
+    from_model_path_calls records (model_path, max_seq_len, quantization) tuples
+    so tests can assert both the model path and the quantization config forwarded
+    by the CLI.
     """
 
-    from_model_path_calls: list[tuple[Path, int]] = []
+    from_model_path_calls: list[tuple[Path, int, QuantizationConfig | None]] = []
     instances: list["_FakeEngine"] = []
     next_stats: GenerationStats | None = None
 
@@ -71,8 +76,13 @@ class _FakeEngine:
         self.generate_request_calls: list[GenerationRequest] = []
 
     @classmethod
-    def from_model_path(cls, model_path: Path, max_seq_len: int):
-        cls.from_model_path_calls.append((model_path, max_seq_len))
+    def from_model_path(
+        cls,
+        model_path: Path,
+        max_seq_len: int,
+        quantization: QuantizationConfig | None = None,
+    ):
+        cls.from_model_path_calls.append((model_path, max_seq_len, quantization))
         instance = cls()
         cls.instances.append(instance)
         return instance
@@ -123,7 +133,7 @@ def test_main_passes_model_path_and_max_seq_len_to_engine():
         stdout=StringIO(),
     )
 
-    assert _FakeEngine.from_model_path_calls == [(Path("models/tiny"), 128)]
+    assert _FakeEngine.from_model_path_calls == [(Path("models/tiny"), 128, None)]
 
 
 def test_main_passes_generation_arguments_to_engine():
@@ -166,7 +176,7 @@ def test_main_accepts_qwen3_model_path_and_sampling_flags():
         stdout=stdout,
     )
 
-    assert _FakeEngine.from_model_path_calls == [(Path("models/qwen3-0.6b"), 2048)]
+    assert _FakeEngine.from_model_path_calls == [(Path("models/qwen3-0.6b"), 2048, None)]
     req = _FakeEngine.instances[0].generate_request_calls[0]
     assert req.prompt == "The capital of France is"
     assert req.max_new_tokens == 8
@@ -184,7 +194,7 @@ def test_main_uses_documented_defaults():
         stderr=StringIO(),
     )
 
-    assert _FakeEngine.from_model_path_calls == [(Path("models/tiny"), 2048)]
+    assert _FakeEngine.from_model_path_calls == [(Path("models/tiny"), 2048, None)]
     req = _FakeEngine.instances[0].generate_request_calls[0]
     assert req.prompt == "Prompt"
     assert req.max_new_tokens == 200
@@ -601,6 +611,120 @@ def test_parse_message_raises_on_missing_colon():
     """Input without a colon raises ValueError."""
     with pytest.raises(ValueError, match="ROLE:CONTENT"):
         _parse_message("nocontent")
+
+
+# ---------------------------------------------------------------------------
+# Quantization flags — T04
+# ---------------------------------------------------------------------------
+
+
+def test_main_quantization_default_is_none():
+    """--quantization defaults to none; Engine receives quantization=None."""
+    main(
+        ["--model-path", "models/tiny", "--prompt", "hi"],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+    )
+    _, _, quant = _FakeEngine.from_model_path_calls[0]
+    assert quant is None
+
+
+@pytest.mark.parametrize("flag,expected_bits", [("int4", 4), ("int8", 8)])
+def test_main_quantization_flag_forwards_config_to_engine(flag, expected_bits):
+    """--quantization int4/int8 builds a QuantizationConfig and forwards it."""
+    main(
+        ["--model-path", "models/tiny", "--prompt", "hi", "--quantization", flag],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+    )
+    _, _, quant = _FakeEngine.from_model_path_calls[0]
+    assert isinstance(quant, QuantizationConfig)
+    assert quant.bits == expected_bits
+    assert quant.group_size == 64  # default
+
+
+def test_main_quant_group_size_flag_forwarded():
+    """--quant-group-size N is passed through to the QuantizationConfig."""
+    main(
+        [
+            "--model-path", "models/tiny",
+            "--prompt", "hi",
+            "--quantization", "int4",
+            "--quant-group-size", "32",
+        ],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+    )
+    _, _, quant = _FakeEngine.from_model_path_calls[0]
+    assert isinstance(quant, QuantizationConfig)
+    assert quant.group_size == 32
+
+
+def test_main_quantization_none_explicit_passes_none_to_engine():
+    """--quantization none explicitly passes None, same as the default."""
+    main(
+        ["--model-path", "models/tiny", "--prompt", "hi", "--quantization", "none"],
+        engine_cls=_FakeEngine,
+        stdout=StringIO(),
+    )
+    _, _, quant = _FakeEngine.from_model_path_calls[0]
+    assert quant is None
+
+
+def test_main_invalid_quantization_does_not_load_model():
+    """Unknown --quantization value fails before the model is loaded."""
+    with pytest.raises(SystemExit):
+        main(
+            ["--model-path", "models/tiny", "--prompt", "hi", "--quantization", "fp8"],
+            engine_cls=_FakeEngine,
+            stdout=StringIO(),
+        )
+    assert _FakeEngine.from_model_path_calls == []
+
+
+def test_main_quant_group_size_zero_does_not_load_model():
+    """--quant-group-size 0 is rejected by argparse before the model loads."""
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--model-path", "models/tiny",
+                "--prompt", "hi",
+                "--quantization", "int4",
+                "--quant-group-size", "0",
+            ],
+            engine_cls=_FakeEngine,
+            stdout=StringIO(),
+        )
+    assert _FakeEngine.from_model_path_calls == []
+
+
+# ---------------------------------------------------------------------------
+# _build_quantization_config unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_quantization_config_none_returns_none():
+    import argparse
+    args = argparse.Namespace(quantization="none", quant_group_size=64)
+    assert _build_quantization_config(args) is None
+
+
+def test_build_quantization_config_int4():
+    import argparse
+    args = argparse.Namespace(quantization="int4", quant_group_size=64)
+    cfg = _build_quantization_config(args)
+    assert isinstance(cfg, QuantizationConfig)
+    assert cfg.bits == 4
+    assert cfg.group_size == 64
+
+
+def test_build_quantization_config_int8_custom_group_size():
+    import argparse
+    args = argparse.Namespace(quantization="int8", quant_group_size=32)
+    cfg = _build_quantization_config(args)
+    assert isinstance(cfg, QuantizationConfig)
+    assert cfg.bits == 8
+    assert cfg.group_size == 32
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ import tiny_duo_infer.engine as engine_module
 from tiny_duo_infer.context_policy import ContextBudgetError
 from tiny_duo_infer.engine import Engine
 from tiny_duo_infer.generation import ChatMessage, GenerationRequest
+from tiny_duo_infer.quantization import QuantizationConfig
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +235,104 @@ def test_from_model_path_rejects_max_seq_len_above_config(monkeypatch, tiny_mode
         Engine.from_model_path("/fake/llama", max_seq_len=tiny_model_config.max_seq_len + 1)
 
     assert records == []
+
+
+def test_from_model_path_quantization_none_skips_quantize_weights(monkeypatch, tiny_model_config):
+    """quantization=None leaves converted weights unchanged; quantize_weights not called."""
+    records: list[tuple[str, object]] = []
+    tokenizer = _FakeTokenizer([1, 2])
+    hf_weights = {"raw": mx.array([1.0])}
+    converted_weights = {"converted": mx.array([2.0])}
+
+    def convert_llama(weights, config):
+        records.append(("llama.convert", (weights, config)))
+        return converted_weights
+
+    quantize_calls: list = []
+
+    def fake_quantize_weights(project_weights, config):
+        quantize_calls.append((project_weights, config))
+        return project_weights
+
+    monkeypatch.setattr(engine_module, "load_config", lambda _: tiny_model_config)
+    monkeypatch.setattr(engine_module.Tokenizer, "from_pretrained", staticmethod(lambda _: tokenizer))
+    monkeypatch.setattr(engine_module, "load_weights", lambda _: hf_weights)
+    monkeypatch.setattr(engine_module, "LlamaModel", _fake_model_class("llama", records))
+    monkeypatch.setattr(engine_module, "convert_llama", convert_llama)
+    monkeypatch.setattr(engine_module, "quantize_weights", fake_quantize_weights)
+
+    Engine.from_model_path("/fake/llama", max_seq_len=tiny_model_config.max_seq_len, quantization=None)
+
+    assert quantize_calls == [], "quantize_weights must not be called when quantization=None"
+    assert records[2] == ("llama.load_weights", converted_weights)
+
+
+def test_from_model_path_quantization_config_calls_quantize_and_loads_result(
+    monkeypatch, tiny_model_config
+):
+    """quantization=QuantizationConfig calls quantize_weights after conversion and loads result."""
+    records: list[tuple[str, object]] = []
+    tokenizer = _FakeTokenizer([1, 2])
+    hf_weights = {"raw": mx.array([1.0])}
+    converted_weights = {"converted": mx.array([2.0])}
+    quantized_weights = {"converted_q": mx.array([3.0])}  # distinct sentinel
+
+    def convert_llama(weights, config):
+        records.append(("llama.convert", (weights, config)))
+        return converted_weights
+
+    quant_config = QuantizationConfig(bits=4, group_size=64)
+    quantize_calls: list = []
+
+    def fake_quantize_weights(project_weights, config):
+        quantize_calls.append((project_weights, config))
+        return quantized_weights
+
+    monkeypatch.setattr(engine_module, "load_config", lambda _: tiny_model_config)
+    monkeypatch.setattr(engine_module.Tokenizer, "from_pretrained", staticmethod(lambda _: tokenizer))
+    monkeypatch.setattr(engine_module, "load_weights", lambda _: hf_weights)
+    monkeypatch.setattr(engine_module, "LlamaModel", _fake_model_class("llama", records))
+    monkeypatch.setattr(engine_module, "convert_llama", convert_llama)
+    monkeypatch.setattr(engine_module, "quantize_weights", fake_quantize_weights)
+
+    Engine.from_model_path("/fake/llama", max_seq_len=tiny_model_config.max_seq_len, quantization=quant_config)
+
+    assert len(quantize_calls) == 1
+    assert quantize_calls[0] == (converted_weights, quant_config)
+    # model.load_weights must receive the quantized dict, not the converter output
+    assert records[2] == ("llama.load_weights", quantized_weights)
+
+
+def test_from_model_path_quantize_weights_error_propagates_before_model_construction(
+    monkeypatch, tiny_model_config
+):
+    """ValueError from quantize_weights propagates; model is never constructed."""
+    records: list[tuple[str, object]] = []
+    tokenizer = _FakeTokenizer([1, 2])
+    hf_weights = {"raw": mx.array([1.0])}
+    converted_weights = {"converted": mx.array([2.0])}
+
+    def convert_llama(weights, config):
+        return converted_weights
+
+    def fake_quantize_weights(project_weights, config):
+        raise ValueError("in_features=48 not divisible by group_size=64")
+
+    monkeypatch.setattr(engine_module, "load_config", lambda _: tiny_model_config)
+    monkeypatch.setattr(engine_module.Tokenizer, "from_pretrained", staticmethod(lambda _: tokenizer))
+    monkeypatch.setattr(engine_module, "load_weights", lambda _: hf_weights)
+    monkeypatch.setattr(engine_module, "LlamaModel", _fake_model_class("llama", records))
+    monkeypatch.setattr(engine_module, "convert_llama", convert_llama)
+    monkeypatch.setattr(engine_module, "quantize_weights", fake_quantize_weights)
+
+    with pytest.raises(ValueError, match="not divisible"):
+        Engine.from_model_path(
+            "/fake/llama",
+            max_seq_len=tiny_model_config.max_seq_len,
+            quantization=QuantizationConfig(bits=4, group_size=64),
+        )
+
+    assert records == [], "model must not be constructed when quantize_weights raises"
 
 
 def test_prefill_token_ids_returns_final_position_logits(tiny_model_config):
