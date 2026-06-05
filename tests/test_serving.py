@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 import tiny_duo_infer.serving.api as api_module
+import tiny_duo_infer.serving.worker as worker_module
+from tiny_duo_infer.engine import Engine
 from tiny_duo_infer.generation import GenerationRequest, GenerationResponse, GenerationStats
+from tiny_duo_infer.quantization import QuantizationConfig
 from tiny_duo_infer.serving.api import create_app, create_app_from_path
+from tiny_duo_infer.serving.worker import InferenceWorker
 
 
 # ---------------------------------------------------------------------------
@@ -542,3 +547,114 @@ def test_generate_stream_final_chunk_stats_omits_decode_step_ms():
     resp = client.post("/generate/stream", json={"prompt": "hi"})
     chunks = _parse_ndjson(resp.text)
     assert "decode_step_ms" not in chunks[-1]["stats"]
+
+
+# ---------------------------------------------------------------------------
+# Quantization forwarding — T05
+# ---------------------------------------------------------------------------
+
+
+def test_worker_from_path_forwards_quantization_none_to_engine(monkeypatch):
+    """InferenceWorker.from_path with quantization=None passes None to Engine."""
+    records: list[dict] = []
+
+    def fake_from_model_path(model_path, max_seq_len=2048, quantization=None):
+        records.append({"model_path": model_path, "max_seq_len": max_seq_len, "quantization": quantization})
+        return _FakeEngine()
+
+    monkeypatch.setattr(Engine, "from_model_path", fake_from_model_path)
+
+    worker = InferenceWorker.from_path("/fake/model", max_seq_len=64, quantization=None)
+    worker.shutdown()
+
+    assert len(records) == 1
+    assert records[0]["quantization"] is None
+
+
+def test_worker_from_path_forwards_quantization_config_to_engine(monkeypatch):
+    """InferenceWorker.from_path passes QuantizationConfig to Engine inside the worker thread."""
+    records: list[dict] = []
+    quant_config = QuantizationConfig(bits=4, group_size=64)
+
+    def fake_from_model_path(model_path, max_seq_len=2048, quantization=None):
+        records.append({"model_path": model_path, "max_seq_len": max_seq_len, "quantization": quantization})
+        return _FakeEngine()
+
+    monkeypatch.setattr(Engine, "from_model_path", fake_from_model_path)
+
+    worker = InferenceWorker.from_path("/fake/model", max_seq_len=64, quantization=quant_config)
+    worker.shutdown()
+
+    assert len(records) == 1
+    assert records[0]["quantization"] is quant_config
+    assert records[0]["quantization"].bits == 4
+    assert records[0]["quantization"].group_size == 64
+
+
+def test_worker_from_path_forwards_int8_quantization_config(monkeypatch):
+    """InferenceWorker.from_path forwards INT8 QuantizationConfig correctly."""
+    records: list[dict] = []
+    quant_config = QuantizationConfig(bits=8, group_size=32)
+
+    def fake_from_model_path(model_path, max_seq_len=2048, quantization=None):
+        records.append({"quantization": quantization})
+        return _FakeEngine()
+
+    monkeypatch.setattr(Engine, "from_model_path", fake_from_model_path)
+
+    worker = InferenceWorker.from_path("/fake/model", max_seq_len=64, quantization=quant_config)
+    worker.shutdown()
+
+    assert records[0]["quantization"].bits == 8
+    assert records[0]["quantization"].group_size == 32
+
+
+def test_create_app_from_path_forwards_quantization_to_worker(monkeypatch):
+    """create_app_from_path passes quantization through to InferenceWorker.from_path."""
+    worker_calls: list[dict] = []
+    quant_config = QuantizationConfig(bits=4, group_size=64)
+
+    original_from_path = InferenceWorker.from_path
+
+    def fake_from_path(cls_or_path, max_seq_len=2048, quantization=None, **kwargs):
+        worker_calls.append({"max_seq_len": max_seq_len, "quantization": quantization})
+        return InferenceWorker.from_engine(_FakeEngine())
+
+    monkeypatch.setattr(InferenceWorker, "from_path", fake_from_path)
+
+    create_app_from_path(Path("/fake/model"), max_seq_len=512, quantization=quant_config)
+
+    assert len(worker_calls) == 1
+    assert worker_calls[0]["quantization"] is quant_config
+    assert worker_calls[0]["max_seq_len"] == 512
+
+
+def test_create_app_from_path_default_quantization_is_none(monkeypatch):
+    """create_app_from_path defaults to quantization=None (full-precision path)."""
+    worker_calls: list[dict] = []
+
+    def fake_from_path(cls_or_path, max_seq_len=2048, quantization=None, **kwargs):
+        worker_calls.append({"quantization": quantization})
+        return InferenceWorker.from_engine(_FakeEngine())
+
+    monkeypatch.setattr(InferenceWorker, "from_path", fake_from_path)
+
+    create_app_from_path(Path("/fake/model"))
+
+    assert worker_calls[0]["quantization"] is None
+
+
+def test_worker_from_path_raises_on_engine_load_failure(monkeypatch):
+    """from_path() must propagate engine load exceptions instead of hanging.
+
+    When Engine.from_model_path raises (e.g., incompatible group_size), the
+    worker thread sets the ready event so the caller is never blocked, and
+    from_path() re-raises the original exception on the caller thread.
+    """
+    def fake_from_model_path(model_path, max_seq_len=2048, quantization=None):
+        raise ValueError("in_features=48 not divisible by group_size=64")
+
+    monkeypatch.setattr(Engine, "from_model_path", fake_from_model_path)
+
+    with pytest.raises(ValueError, match="not divisible"):
+        InferenceWorker.from_path("/fake/model", max_seq_len=64)

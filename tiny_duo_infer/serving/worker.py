@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tiny_duo_infer.generation import GenerationRequest, GenerationResponse
+from tiny_duo_infer.quantization import QuantizationConfig
 
 
 class InferenceWorker:
@@ -31,6 +32,7 @@ class InferenceWorker:
         self._busy_event = threading.Event()
         self._busy_mutex = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._load_error: BaseException | None = None
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -45,16 +47,31 @@ class InferenceWorker:
         return worker
 
     @classmethod
-    def from_path(cls, model_path: Path, max_seq_len: int) -> InferenceWorker:
+    def from_path(
+        cls,
+        model_path: Path,
+        max_seq_len: int,
+        quantization: QuantizationConfig | None = None,
+    ) -> InferenceWorker:
         """Create engine inside the worker thread (use for production).
 
         Blocks until the engine is fully loaded so the server is ready to
         accept requests as soon as this returns.
+
+        Args:
+            model_path:   path to a local HuggingFace-compatible model directory.
+            max_seq_len:  maximum total sequence length (prompt + generated).
+            quantization: optional weight-only quantization config (Phase 1.8).
+                          Passed through to Engine.from_model_path() inside the
+                          worker thread so MLX GPU stream affinity is preserved.
         """
         worker = cls()
         worker._model_path = model_path
         worker._max_seq_len = max_seq_len
+        worker._quantization = quantization
         worker._start(load_in_thread=True)
+        if worker._load_error is not None:
+            raise worker._load_error
         return worker
 
     def _start(self, load_in_thread: bool) -> None:
@@ -68,9 +85,19 @@ class InferenceWorker:
     def _run(self, load_in_thread: bool, ready: threading.Event) -> None:
         if load_in_thread:
             from tiny_duo_infer.engine import Engine  # noqa: PLC0415
-            self._engine = Engine.from_model_path(
-                self._model_path, max_seq_len=self._max_seq_len
-            )
+            try:
+                self._engine = Engine.from_model_path(
+                    self._model_path,
+                    max_seq_len=self._max_seq_len,
+                    quantization=self._quantization,
+                )
+            except Exception as exc:
+                # Capture the error so from_path() can re-raise it on the
+                # caller thread. Always set ready so the caller is never
+                # left blocked in ready.wait().
+                self._load_error = exc
+                ready.set()
+                return
         ready.set()
 
         while True:

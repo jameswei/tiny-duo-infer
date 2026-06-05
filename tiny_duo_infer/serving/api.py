@@ -58,6 +58,7 @@ from tiny_duo_infer.generation import (
     GenerationResponse,
     GenerationStats,
 )
+from tiny_duo_infer.quantization import QuantizationConfig
 from tiny_duo_infer.serving.worker import InferenceWorker
 
 
@@ -317,15 +318,26 @@ def create_app(engine: Any) -> FastAPI:
     return app
 
 
-def create_app_from_path(model_path: Path, max_seq_len: int = 2048) -> FastAPI:
+def create_app_from_path(
+    model_path: Path,
+    max_seq_len: int = 2048,
+    quantization: QuantizationConfig | None = None,
+) -> FastAPI:
     """Load the engine inside the inference worker thread and return the app.
 
     Use this for production and slow smoke tests.  The engine is initialised
     on the worker thread so all MLX GPU operations remain on that thread
     (Apple Silicon GPU stream thread-affinity requirement).
+
+    Args:
+        model_path:   path to a local HuggingFace-compatible model directory.
+        max_seq_len:  maximum total sequence length (prompt + generated).
+        quantization: optional weight-only quantization config (Phase 1.8).
+                      Forwarded to the worker thread so engine loading with
+                      quantization stays on the MLX GPU stream thread.
     """
     global _worker
-    _worker = InferenceWorker.from_path(model_path, max_seq_len)
+    _worker = InferenceWorker.from_path(model_path, max_seq_len, quantization=quantization)
     return app
 
 
@@ -338,6 +350,20 @@ if __name__ == "__main__":
     import argparse
 
     import uvicorn
+
+    _QUANTIZATION_CHOICES = ("none", "int4", "int8")
+
+    def _positive_int(value: str) -> int:
+        parsed = int(value)
+        if parsed <= 0:
+            raise argparse.ArgumentTypeError("must be > 0")
+        return parsed
+
+    def _build_quantization_config(args: argparse.Namespace) -> QuantizationConfig | None:
+        if args.quantization == "none":
+            return None
+        bits = 4 if args.quantization == "int4" else 8
+        return QuantizationConfig(bits=bits, group_size=args.quant_group_size)
 
     parser = argparse.ArgumentParser(
         prog="tiny_duo_infer.serving.api",
@@ -353,7 +379,32 @@ if __name__ == "__main__":
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
     parser.add_argument("--port", type=int, default=8000, help="Bind port.")
+    parser.add_argument(
+        "--quantization",
+        choices=_QUANTIZATION_CHOICES,
+        default="none",
+        help=(
+            "Weight-only quantization mode. "
+            "none = full precision (default); "
+            "int4 = INT4 affine quantization; "
+            "int8 = INT8 affine quantization."
+        ),
+    )
+    parser.add_argument(
+        "--quant-group-size",
+        type=_positive_int,
+        default=64,
+        help=(
+            "Quantization group size: elements per group along the input dimension. "
+            "Must evenly divide every quantized weight's input dimension. "
+            "Default: 64."
+        ),
+    )
     args = parser.parse_args()
 
-    create_app_from_path(Path(args.model_path), max_seq_len=args.max_seq_len)
+    create_app_from_path(
+        Path(args.model_path),
+        max_seq_len=args.max_seq_len,
+        quantization=_build_quantization_config(args),
+    )
     uvicorn.run(app, host=args.host, port=args.port)
