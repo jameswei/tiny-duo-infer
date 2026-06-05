@@ -6,14 +6,16 @@ records.
 
 ## Current Phase
 
-Phase 1.8 is active.
+No phase is currently active.
 
-| Phase | Spec | Taskboard | Status |
-|---|---|---|---|
-| Phase 1.8 | `docs/phases/phase-1.8-weight-quantization.md` | `docs/phases/phase-1.8-taskboard.md` | Active |
+Phase 1.8 closed on 2026-06-06; see the Completed Phases table below for its
+spec, taskboard, and handoff. The next implementation contract has not been
+opened yet — the directional Phase 1.9 (speculative decoding) and Phase 1.10
+(minimal continuous batching) entries below are not active until a dedicated
+spec and taskboard are drafted.
 
-Phase 1.8 focuses on MLX-native weight-only quantization. Phase 2 CUDA/NVIDIA
-work remains deferred while the NVIDIA development environment is unavailable.
+Per `AGENTS.md`, agents should not claim or start implementation work until
+the next phase scope is confirmed and a phase spec/taskboard exists.
 
 ## Agent Reading Rule
 
@@ -37,6 +39,7 @@ conflict, or when the active phase explicitly points to them.
 | Phase 1.5 | `docs/phases/phase-1.5-qwen3-mlx.md` | `docs/phases/phase-1.5-taskboard.md` | Done |
 | Phase 1.6 | `docs/phases/phase-1.6-generation-serving.md` | `docs/phases/phase-1.6-taskboard.md` | Done |
 | Phase 1.7 | `docs/phases/phase-1.7-observability.md` | `docs/phases/phase-1.7-taskboard.md` | Done |
+| Phase 1.8 | `docs/phases/phase-1.8-weight-quantization.md` | `docs/phases/phase-1.8-taskboard.md` | Done |
 
 ## Later And Deferred Phases
 

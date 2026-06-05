@@ -38,7 +38,7 @@ performance.
 | Phase 1.5 | Qwen3-0.6B support on the same MLX backend | Done | `docs/phases/phase-1.5-qwen3-mlx.md` |
 | Phase 1.6 | CLI UX and single-request HTTP serving | Done | `docs/phases/phase-1.6-generation-serving.md` |
 | Phase 1.7 | Timing, KV-cache memory, and context-budget observability | Done | `docs/phases/phase-1.7-observability.md` |
-| Phase 1.8 | MLX-native weight-only quantization | Active | `docs/phases/phase-1.8-weight-quantization.md` |
+| Phase 1.8 | MLX-native weight-only quantization | Done | `docs/phases/phase-1.8-weight-quantization.md` |
 | Phase 1.9 | Speculative decoding | Directional | no active implementation contract |
 | Phase 1.10 | Minimal continuous batching | Directional | no active implementation contract |
 | Phase 2 | PyTorch/CUDA backend for NVIDIA GPUs | Deferred | no active implementation contract |

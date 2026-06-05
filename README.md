@@ -19,7 +19,7 @@ backend.
 | Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
 | Phase 1.6 | Refine CLI and support HTTP serving | Done |
 | Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done |
-| Phase 1.8 | MLX-native weight-only quantization | Active |
+| Phase 1.8 | MLX-native weight-only quantization | Done |
 | Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred |
 | Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
 
