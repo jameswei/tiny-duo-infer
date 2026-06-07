@@ -1,9 +1,9 @@
 # tiny-duo-infer
 
-A tiny inference engine implementation for learning purposes. Phase 1 runs on
-Apple Silicon with MLX; later phases add model-family portability, generation
-UX, local serving, observability, weight-only quantization, then a PyTorch/CUDA
-backend.
+A tiny inference engine implementation for learning purposes. The current engine
+runs on Apple Silicon with MLX and supports model loading, generation, serving,
+observability, profiling, and MLX-native weight-only quantization. CUDA support
+is deferred while the project continues with MLX-first inference-engine features.
 
 ## What It Is
 
@@ -20,8 +20,13 @@ backend.
 | Phase 1.6 | Refine CLI and support HTTP serving | Done |
 | Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done |
 | Phase 1.8 | MLX-native weight-only quantization | Done |
+| Phase 1.9 | Speculative decoding | Directional |
+| Phase 1.10 | Minimal continuous batching | Directional |
 | Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred |
-| Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Not started |
+| Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Future |
+
+No implementation phase is currently active. New development work should start
+from a phase spec and taskboard under `docs/phases/`.
 
 ## Model Targets
 
