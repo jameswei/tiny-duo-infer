@@ -380,30 +380,53 @@ Try:
 - For logits `[1, 2, 3]`, compute greedy output.
 - For a simple distribution, identify the top-p nucleus by hand.
 
-### 16. CLI
+### 16. CLI And Chat Templating
 
 Read:
 
 - `tiny_duo_infer/cli.py`
+- `tiny_duo_infer/prompt.py`
 - `tests/test_cli.py`
+- `tests/test_prompt.py`
 
 Learn:
 
 - Why the CLI is a thin wrapper over `Engine`.
 - How argument parsing maps to `Engine.from_model_path()` and
-  `Engine.generate()`.
+  `Engine.generate_request()`.
 - Why CLI tests use a fake engine instead of real model artifacts.
 - Why users do not pass `--model-type`; model family is inferred from
   `config.json`.
-- Why Qwen3 is currently plain prompt-to-completion mode, not chat-template
-  mode.
+- How `--chat`, `--message ROLE:CONTENT`, and the HTTP `messages: [...]`
+  field share the same `format_chat_prompt()` formatter in
+  `tiny_duo_infer/prompt.py`. Qwen3 uses ChatML
+  (`<|im_start|>role\n…<|im_end|>\n` with an open final
+  `<|im_start|>assistant\n` suffix); Llama is a base model and
+  `format_chat_prompt(..., model_type="llama")` raises a clear `ValueError`
+  pointing callers at plain `--prompt` mode.
+- The full ChatML protocol — including why the assistant suffix is left open,
+  how special tokens are registered, and which validation runs before
+  templating — is covered in
+  `learning_materials/deep_dives/chat_templating.md`.
 
 Try:
 
-- Run `uv run python -m tiny_duo_infer.cli --help`.
+- Run `uv run python -m tiny_duo_infer.cli --help` and read the chat,
+  context-policy, and quantization flag groups.
 - Explain why `--temperature 0.0` gives deterministic greedy output.
 - Run a short Qwen3 smoke if artifacts exist:
   `uv run python -m tiny_duo_infer.cli --model-path models/qwen3-0.6b --prompt "The capital of France is" --max-new-tokens 8 --temperature 0.0`.
+- Run a short Qwen3 chat-mode smoke:
+  `uv run python -m tiny_duo_infer.cli --model-path models/qwen3-0.6b --message system:Be\ concise. --message user:What\ is\ 2+2? --max-new-tokens 16 --temperature 0.0`.
+- Run `uv run pytest tests/test_prompt.py -v` and read the exact ChatML
+  string assertions (especially the open-assistant-suffix lock).
+
+See also:
+
+- `learning_materials/deep_dives/inference_worker.md` — the single-thread
+  MLX worker (`tiny_duo_infer/serving/worker.py`) that the HTTP server in
+  `tiny_duo_infer/serving/api.py` uses to run the same chat-formatted
+  prompts behind FastAPI without violating MLX GPU-stream thread affinity.
 
 ### 17. MLX Eval Placement
 
@@ -722,22 +745,26 @@ generated token
 16. `tiny_duo_infer/sampling.py`
 17. `tiny_duo_infer/engine.py`
 18. `tiny_duo_infer/cli.py`
-19. `tiny_duo_infer/generation.py`
-20. `tiny_duo_infer/context_policy.py`
-21. `tiny_duo_infer/profiling.py`
-22. `tiny_duo_infer/serving/worker.py`
-23. `tiny_duo_infer/serving/api.py`
-24. `tiny_duo_infer/quantization.py`
-25. `tiny_duo_infer/weights/quantizer.py`
-26. `scripts/benchmark.py`
-27. `scripts/profile_generation.py`
-28. Matching `tests/` files in the same order, plus
-    `tests/test_quantization.py` and `tests/test_quantization_integration.py`
-29. `docs/phases/phase-1-handoff.md`
-30. `docs/phases/phase-1.5-qwen3-mlx.md`
-31. `docs/phases/phase-1.7-observability.md`
-32. `docs/phases/phase-1.8-weight-quantization.md`
-33. `learning_materials/deep_dives/quantization.md`
+19. `tiny_duo_infer/prompt.py`
+20. `tiny_duo_infer/generation.py`
+21. `tiny_duo_infer/context_policy.py`
+22. `tiny_duo_infer/profiling.py`
+23. `tiny_duo_infer/serving/worker.py`
+24. `tiny_duo_infer/serving/api.py`
+25. `tiny_duo_infer/quantization.py`
+26. `tiny_duo_infer/weights/quantizer.py`
+27. `scripts/benchmark.py`
+28. `scripts/profile_generation.py`
+29. Matching `tests/` files in the same order, plus
+    `tests/test_prompt.py`, `tests/test_serving.py`,
+    `tests/test_quantization.py`, and `tests/test_quantization_integration.py`
+30. `docs/phases/phase-1-handoff.md`
+31. `docs/phases/phase-1.5-qwen3-mlx.md`
+32. `docs/phases/phase-1.7-observability.md`
+33. `docs/phases/phase-1.8-weight-quantization.md`
+34. `learning_materials/deep_dives/chat_templating.md`
+35. `learning_materials/deep_dives/inference_worker.md`
+36. `learning_materials/deep_dives/quantization.md`
 
 ## What To Write Down
 
