@@ -13,17 +13,17 @@ is deferred while the project continues with MLX-first inference-engine features
 
 ## Roadmap
 
-| Phase | Focus | Status |
-|---|---|---|
-| Phase 1 | Single-user inference on Apple Silicon using MLX | Done |
-| Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done |
-| Phase 1.6 | Refine CLI and support HTTP serving | Done |
-| Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done |
-| Phase 1.8 | MLX-native weight-only quantization | Done |
-| Phase 1.9 | Speculative decoding | Directional |
-| Phase 1.10 | Minimal continuous batching | Directional |
-| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred |
-| Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Future |
+| Phase | Focus | Status | Tag |
+|---|---|---|---|
+| Phase 1 | Single-user inference on Apple Silicon using MLX | Done | [Phase-1](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1) |
+| Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done | [Phase-1.5](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.5) |
+| Phase 1.6 | Refine CLI and support HTTP serving | Done | [Phase-1.6](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.6) |
+| Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done | [Phase-1.7](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.7) |
+| Phase 1.8 | MLX-native weight-only quantization | Done | [Phase-1.8](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.8) |
+| Phase 1.9 | Speculative decoding | Directional | — |
+| Phase 1.10 | Minimal continuous batching | Directional | — |
+| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred | — |
+| Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Future | — |
 
 No implementation phase is currently active. New development work should start
 from a phase spec and taskboard under `docs/phases/`.
