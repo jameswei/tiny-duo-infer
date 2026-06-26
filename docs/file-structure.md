@@ -12,8 +12,9 @@ contracts belong in `docs/phases/`, and collaboration rules belong in
 | `README.md` | Project overview, supported models, common commands, and roadmap status. |
 | `AGENTS.md` | Short bootstrap for agents: what to read before changing code. |
 | `pyproject.toml` | Python package metadata, runtime dependencies, and dev dependency groups. |
-| `.github/workflows/` | Remote CI regression gates. |
+| `.github/workflows/` | Remote CI regression gates and GitHub Pages deployment (`deploy-website.yml`). |
 | `models/` | Optional local symlinks to downloaded Hugging Face model snapshots; not required to be committed. |
+| `website/` | Static HTML landing page (`index.html`, `css/styles.css`, `js/i18n.js`) deployed to GitHub Pages via `deploy-website.yml`. |
 
 ## Source
 

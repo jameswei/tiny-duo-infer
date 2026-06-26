@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="tiny-duo-infer — a learning-first LLM inference engine built from scratch on Apple Silicon with MLX." />
+  <title>tiny-duo-infer — Learning-first LLM Inference Engine</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+
+  <!-- ── Nav ── -->
+  <nav class="nav">
+    <div class="container nav-inner">
+      <a class="nav-logo" href="#">tiny-duo-infer</a>
+      <ul class="nav-links">
+        <li><a href="#about"        data-i18n="nav.about">About</a></li>
+        <li><a href="#capabilities" data-i18n="nav.features">Features</a></li>
+        <li><a href="#stack"        data-i18n="nav.stack">Stack</a></li>
+        <li><a href="#cli"          data-i18n="nav.cli">CLI</a></li>
+      </ul>
+      <div class="nav-actions">
+        <button class="btn-lang" id="lang-toggle" onclick="toggleLang()" data-i18n="nav.lang">中文</button>
+        <a class="btn btn-primary" href="https://github.com/jameswei/tiny-duo-infer" target="_blank" rel="noopener">GitHub →</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ── Hero ── -->
+  <section class="hero">
+    <div class="container">
+      <h1 class="hero-title">tiny-duo-infer</h1>
+      <p class="hero-tagline" data-i18n="hero.tagline">
+        A learning-first LLM inference engine built from scratch on Apple Silicon
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary"
+           href="https://github.com/jameswei/tiny-duo-infer"
+           target="_blank" rel="noopener"
+           data-i18n="hero.cta_primary">View on GitHub</a>
+        <a class="btn btn-secondary" href="#about" data-i18n="hero.cta_secondary">Learn more ↓</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── About ── -->
+  <section class="section" id="about">
+    <div class="container">
+      <h2 data-i18n="about.heading">About</h2>
+      <div class="about-content">
+        <p data-i18n="about.p1">
+          tiny-duo-infer is a pure-Python LLM inference engine that teaches how large language
+          models work under the hood — from tokenization to the final sampled token. Every inference
+          concept is visible in readable code rather than hidden behind Transformers, mlx-lm, or vLLM.
+        </p>
+        <p data-i18n="about.p2">
+          Each building block — prefill, decode, KV cache updates, grouped-query attention, RoPE
+          rotary embeddings, SwiGLU feed-forward networks — is explicitly implemented so that you
+          can trace exactly what happens between a prompt and a generated token.
+        </p>
+        <p data-i18n="about.p3">
+          Inspired by nano-vllm and tiny-llm, the project follows a progressive learning roadmap:
+          from single-user Llama inference to multi-model support, HTTP serving, per-request
+          observability, and INT4/INT8 weight-only quantization.
+        </p>
+
+        <!-- Six concepts you can trace -->
+        <p class="concepts-intro" data-i18n="concepts.intro">
+          Read the code. Understand the engine. Six core inference concepts — fully explicit, no black boxes.
+        </p>
+        <div class="concepts-grid">
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.1.title">Prefill &amp; Decode Loop</div>
+            <div class="concept-desc" data-i18n="concept.1.desc">Trace every token generation step — from KV cache population through the decode loop to EOS detection.</div>
+          </div>
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.2.title">Grouped-Query Attention (GQA)</div>
+            <div class="concept-desc" data-i18n="concept.2.desc">See how K/V heads are expanded to match Q heads, and how the causal mask is built and applied at each step.</div>
+          </div>
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.3.title">Rotary Position Embeddings (RoPE)</div>
+            <div class="concept-desc" data-i18n="concept.3.desc">Follow frequency precomputation and the explicit rotation formula applied pair-wise across the head dimension.</div>
+          </div>
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.4.title">KV Cache Management</div>
+            <div class="concept-desc" data-i18n="concept.4.desc">Understand the update() / advance() protocol that keeps K/V positions consistent across all transformer layers.</div>
+          </div>
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.5.title">Weight-Only Quantization</div>
+            <div class="concept-desc" data-i18n="concept.5.desc">Learn how INT4/INT8 quantized matmul replaces full-precision forward passes, and how memory savings are measured per run.</div>
+          </div>
+          <div class="concept-item">
+            <div class="concept-title" data-i18n="concept.6.title">Sampling Strategies</div>
+            <div class="concept-desc" data-i18n="concept.6.desc">Step through greedy argmax, temperature scaling, top-k filtering, and top-p nucleus selection — all in plain Python.</div>
+          </div>
+        </div>
+
+        <!-- Inference pipeline diagram -->
+        <div class="pipeline-wrap">
+          <svg class="pipeline-svg" viewBox="0 0 700 130" xmlns="http://www.w3.org/2000/svg"
+               role="img" aria-label="Inference pipeline diagram">
+            <defs>
+              <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L8,3 z" class="pipe-arrowhead"/>
+              </marker>
+              <marker id="arr-up" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse">
+                <path d="M0,0 L0,6 L8,3 z" class="pipe-arrowhead"/>
+              </marker>
+            </defs>
+
+            <!-- Box 1: Prompt -->
+            <rect x="2"   y="15" width="92"  height="40" rx="6" class="pipe-box"/>
+            <text x="48"  y="40" text-anchor="middle" class="pipe-label" data-i18n="diagram.prompt">Prompt</text>
+
+            <!-- Arrow 1→2 -->
+            <line x1="94" y1="35" x2="118" y2="35" class="pipe-edge" marker-end="url(#arr)"/>
+
+            <!-- Box 2: Tokenizer -->
+            <rect x="118" y="15" width="105" height="40" rx="6" class="pipe-box"/>
+            <text x="170" y="40" text-anchor="middle" class="pipe-label" data-i18n="diagram.tokenizer">Tokenizer</text>
+
+            <!-- Arrow 2→3 -->
+            <line x1="223" y1="35" x2="247" y2="35" class="pipe-edge" marker-end="url(#arr)"/>
+
+            <!-- Box 3: Engine (accent) -->
+            <rect x="247" y="15" width="150" height="40" rx="6" class="pipe-box pipe-box-accent"/>
+            <text x="322" y="34" text-anchor="middle" class="pipe-label pipe-label-light" data-i18n="diagram.engine">Prefill · Decode</text>
+            <text x="322" y="50" text-anchor="middle" class="pipe-sublabel" data-i18n="diagram.engine_sub">Engine</text>
+
+            <!-- KV Cache box (below Engine) -->
+            <rect x="267" y="82" width="110" height="34" rx="6" class="pipe-box pipe-box-kv"/>
+            <text x="322" y="104" text-anchor="middle" class="pipe-label" data-i18n="diagram.kv_cache">KV Cache</text>
+
+            <!-- Bidirectional Engine ↔ KV Cache -->
+            <line x1="310" y1="55" x2="300" y2="82" class="pipe-edge" marker-end="url(#arr)"/>
+            <line x1="335" y1="82" x2="345" y2="55" class="pipe-edge" marker-end="url(#arr)"/>
+
+            <!-- Arrow 3→4 -->
+            <line x1="397" y1="35" x2="421" y2="35" class="pipe-edge" marker-end="url(#arr)"/>
+
+            <!-- Box 4: Sampler -->
+            <rect x="421" y="15" width="95"  height="40" rx="6" class="pipe-box"/>
+            <text x="468" y="40" text-anchor="middle" class="pipe-label" data-i18n="diagram.sampler">Sampler</text>
+
+            <!-- Arrow 4→5 -->
+            <line x1="516" y1="35" x2="540" y2="35" class="pipe-edge" marker-end="url(#arr)"/>
+
+            <!-- Box 5: Output -->
+            <rect x="540" y="15" width="100" height="40" rx="6" class="pipe-box pipe-box-output"/>
+            <text x="590" y="40" text-anchor="middle" class="pipe-label" data-i18n="diagram.output">Output</text>
+          </svg>
+        </div>
+
+        <p>
+          <a href="https://github.com/jameswei/tiny-duo-infer" target="_blank" rel="noopener"
+             data-i18n="about.link">Explore the source on GitHub →</a>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Stats ── -->
+  <section class="stats-row">
+    <div class="container">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-number">10</div>
+          <div class="stat-label" data-i18n="stats.phases">CORE CONCEPTS BUILT FROM SCRATCH</div>
+          <div class="stat-sub" data-i18n="stats.phases_sub">RoPE · GQA · KV Cache · SwiGLU · Quantization · ···</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number">2</div>
+          <div class="stat-label" data-i18n="stats.models">MODEL FAMILIES</div>
+          <div class="stat-sub" data-i18n="stats.models_sub">Llama-3.2-1B · Qwen3-0.6B</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number">509</div>
+          <div class="stat-label" data-i18n="stats.tests">TESTS PASSING</div>
+          <div class="stat-sub" data-i18n="stats.tests_sub">unit · integration · serving · quantization</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-number">0</div>
+          <div class="stat-label" data-i18n="stats.wrappers">FRAMEWORK WRAPPERS</div>
+          <div class="stat-sub" data-i18n="stats.wrappers_sub">no mlx-lm, no transformers core, pure Python</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Capabilities ── -->
+  <section class="section" id="capabilities">
+    <div class="container">
+      <h2 data-i18n="cap.heading">Capabilities</h2>
+      <div class="cap-grid">
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.1.title">Explicit Prefill → Decode Pipeline</div>
+          <div class="cap-card-desc" data-i18n="cap.1.desc">
+            The full generation loop — prefill, KV cache population, decode step, EOS detection —
+            is implemented in readable Python with no framework wrapper.
+          </div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.2.title">GQA · RoPE · SwiGLU from Scratch</div>
+          <div class="cap-card-desc" data-i18n="cap.2.desc">
+            Grouped-query attention, rotary position embeddings, and SwiGLU feed-forward networks
+            are each implemented explicitly so every computation is traceable.
+          </div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.3.title">INT4 / INT8 Weight-Only Quantization</div>
+          <div class="cap-card-desc" data-i18n="cap.3.desc">
+            MLX-native quantized matmul with per-group affine scales. Memory accounting reports
+            full-precision vs runtime linear-weight bytes for every run.
+          </div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.4.title">HTTP Serving with NDJSON Streaming</div>
+          <div class="cap-card-desc" data-i18n="cap.4.desc">
+            FastAPI server exposes <code>/generate</code> (JSON) and <code>/generate/stream</code>
+            (NDJSON). Full 26-field stats included in every response.
+          </div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.5.title">Per-request Observability</div>
+          <div class="cap-card-desc" data-i18n="cap.5.desc">
+            Time-to-first-token, decode throughput, KV-cache memory, context-budget policy outcome,
+            and quantization stats — reported on every request via CLI or HTTP.
+          </div>
+        </div>
+
+        <div class="cap-card">
+          <div class="cap-card-title" data-i18n="cap.6.title">Multi-model Portability</div>
+          <div class="cap-card-desc" data-i18n="cap.6.desc">
+            Supports Llama-3.2-1B and Qwen3-0.6B on the same engine, demonstrating model-family
+            portability before backend portability.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Tech Stack ── -->
+  <section class="section section-alt" id="stack">
+    <div class="container">
+      <h2 data-i18n="stack.heading">Tech Stack</h2>
+      <table class="stack-table">
+        <tbody>
+          <tr>
+            <td data-i18n="stack.lang">Language</td>
+            <td>Python 3.12 — no C++ or custom kernels</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.backend">Backend</td>
+            <td>MLX (Apple Silicon unified memory)</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.models_row">Models</td>
+            <td>meta-llama/Llama-3.2-1B · Qwen/Qwen3-0.6B</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.tokenizer">Tokenizer</td>
+            <td>HuggingFace <code>tokenizers</code> package</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.weights">Weights</td>
+            <td><code>safetensors</code> shard loading with HF key mapping</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.serving">Serving</td>
+            <td>FastAPI — single-request HTTP, JSON + NDJSON streaming</td>
+          </tr>
+          <tr>
+            <td data-i18n="stack.tooling">Tooling</td>
+            <td>uv · pytest (509 tests) · GitHub Actions CI</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── CLI ── -->
+  <section class="section" id="cli">
+    <div class="container">
+      <h2 data-i18n="cli.heading">CLI &amp; API</h2>
+      <p class="cli-desc" data-i18n="cli.desc">
+        Run inference locally from the command line, start the HTTP server, or profile
+        generation across quantization modes — all with a single <code>uv run</code>.
+      </p>
+      <div class="terminal">
+        <pre><code><span class="comment"># Plain completion (Llama-3.2-1B)</span>
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/llama-3.2-1b \
+  --prompt "The capital of France is" \
+  --max-new-tokens 32 --temperature 0.0
+
+<span class="comment"># Qwen3 chat mode</span>
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/qwen3-0.6b \
+  --prompt "What is attention in transformers?" \
+  --chat --max-new-tokens 64
+
+<span class="comment"># INT4 quantization with full stats</span>
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/llama-3.2-1b \
+  --prompt "The capital of France is" \
+  --quantization int4 --quant-group-size 64 --show-stats
+
+<span class="comment"># Start HTTP server with INT8 weights</span>
+uv run python -m tiny_duo_infer.serving.api \
+  --model-path ./models/qwen3-0.6b \
+  --max-seq-len 2048 --quantization int8
+
+<span class="comment"># Streaming request via curl</span>
+curl -s http://127.0.0.1:8000/generate/stream \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Once upon a time", "max_new_tokens": 32}'</code></pre>
+      </div>
+      <p>
+        <a href="https://github.com/jameswei/tiny-duo-infer#readme"
+           target="_blank" rel="noopener"
+           data-i18n="cli.docs_link">Full documentation on GitHub →</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- ── CTA ── -->
+  <section class="cta-section">
+    <div class="container">
+      <h2 data-i18n="cta.heading">Interested in the source?</h2>
+      <a class="btn btn-primary btn-large"
+         href="https://github.com/jameswei/tiny-duo-infer"
+         target="_blank" rel="noopener"
+         data-i18n="cta.button">View on GitHub</a>
+    </div>
+  </section>
+
+  <!-- ── Footer ── -->
+  <footer class="footer">
+    <div class="container footer-inner">
+      <span data-i18n-html="footer.built_by">Built by
+        <a href="https://linkedin.com/in/jameswei" target="_blank" rel="noopener">James Wei</a>
+      </span>
+      <div class="footer-links">
+        <a href="https://github.com/jameswei" target="_blank" rel="noopener" data-i18n="footer.github">GitHub</a>
+        <a href="https://linkedin.com/in/jameswei" target="_blank" rel="noopener" data-i18n="footer.linkedin">LinkedIn</a>
+        <a href="https://github.com/jameswei/tiny-duo-infer" target="_blank" rel="noopener" data-i18n="footer.repo">Repository</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="js/i18n.js"></script>
+</body>
+</html>

@@ -1,5 +1,7 @@
 # tiny-duo-infer
 
+**Project site:** https://jameswei.github.io/tiny-duo-infer/
+
 A tiny inference engine implementation for learning purposes. The current engine
 runs on Apple Silicon with MLX and supports model loading, generation, serving,
 observability, profiling, and MLX-native weight-only quantization. CUDA support
