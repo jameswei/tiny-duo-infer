@@ -2,109 +2,100 @@
 
 **Project site:** https://jameswei.github.io/tiny-duo-infer/
 
-A tiny inference engine implementation for learning purposes. The current engine
-runs on Apple Silicon with MLX and supports model loading, generation, serving,
-observability, profiling, and MLX-native weight-only quantization. CUDA support
-is deferred while the project continues with MLX-first inference-engine features.
+A learning-first LLM inference engine built from scratch in pure Python on Apple Silicon (MLX).
+Every inference concept — prefill, decode, KV cache, GQA, RoPE, SwiGLU, weight-only quantization —
+is explicitly implemented in readable code rather than hidden behind `transformers`, `mlx-lm`, or vLLM.
 
-## What It Is
+Inspired by [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm), [MinivLLM](https://github.com/Wenyueh/MinivLLM), and [tiny-llm](https://github.com/skyzh/tiny-llm).
 
-- A learning-first LLM inference engine inspired by [nano-vllm](https://github.com/GeeeekExplorer/nano-vllm), [MinivLLM](https://github.com/Wenyueh/MinivLLM), and [tiny-llm](https://github.com/skyzh/tiny-llm), implemented in pure Python. The goal is to understand how an inference engine works by building each piece from scratch: model loading, tokenization, forward pass, KV cache, sampling, and scheduling/serving.
+## What's Implemented
 
-- Key design principle: readable, teachable code over optimized code. Every concept (prefill, decode, KV cache updates, GQA, RoPE) must be visible in the implementation rather than hidden behind transformers, mlx-lm, or vLLM.
+- **Prefill & decode loop** — full generation lifecycle with EOS detection and stop-string support
+- **Grouped-query attention (GQA)** — explicit head expansion, causal masking, KV cache update/advance protocol
+- **Rotary position embeddings (RoPE)** — frequency precomputation and pair-wise rotation
+- **SwiGLU feed-forward networks** — gate/up/down projections with explicit SiLU activation
+- **KV cache** — pre-allocated per-layer buffers with position-consistent write/commit semantics
+- **Sampling** — greedy, temperature scaling, top-k, top-p nucleus
+- **Weight-only quantization** — INT4/INT8 via MLX-native `quantized_matmul`; per-run memory accounting
+- **HTTP serving** — single-request FastAPI server with JSON and NDJSON streaming endpoints
+- **Observability** — per-request TTFT, decode throughput, KV-cache memory, context-budget policy
+- **Profiling** — repeatable latency/throughput benchmarks across prompts and quantization modes
+- **Multi-model support** — Llama-3.2-1B and Qwen3-0.6B on the same engine
 
-## Roadmap
+## Models
 
-| Phase | Focus | Status | Tag |
-|---|---|---|---|
-| Phase 1 | Single-user inference on Apple Silicon using MLX | Done | [Phase-1](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1) |
-| Phase 1.5 | Add Qwen3-0.6B support on the same MLX backend | Done | [Phase-1.5](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.5) |
-| Phase 1.6 | Refine CLI and support HTTP serving | Done | [Phase-1.6](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.6) |
-| Phase 1.7 | Engine observability: timing, KV-cache memory, and per-request context-budget policy | Done | [Phase-1.7](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.7) |
-| Phase 1.8 | MLX-native weight-only quantization | Done | [Phase-1.8](https://github.com/jameswei/tiny-duo-infer/releases/tag/Phase-1.8) |
-| Phase 1.9 | Speculative decoding | Directional | — |
-| Phase 1.10 | Minimal continuous batching | Directional | — |
-| Phase 2 | Add NVIDIA/PyTorch/CUDA backend | Deferred | — |
-| Phase 3 | Multi-user serving: scheduling, batching, streaming, PagedAttention | Future | — |
+| Model | HuggingFace |
+|---|---|
+| Llama-3.2-1B (base) | [meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B) |
+| Qwen3-0.6B | [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B) |
 
-No implementation phase is currently active. New development work should start
-from a phase spec and taskboard under `docs/phases/`.
+## Getting Started
 
-## Model Targets
+**Requirements:** Python 3.12, [uv](https://docs.astral.sh/uv/), Apple Silicon Mac (MLX)
 
-- [meta-llama/Llama-3.2-1B](https://huggingface.co/meta-llama/Llama-3.2-1B)
-- [Qwen/Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B)
+```bash
+# Clone and install
+git clone https://github.com/jameswei/tiny-duo-infer.git
+cd tiny-duo-infer
+uv sync
 
-## Local CLI
+# Download a model (example: Qwen3-0.6B)
+huggingface-cli download Qwen/Qwen3-0.6B --local-dir ./models/qwen3-0.6b
 
-Plain completion (Llama or Qwen3):
+# Run your first generation
+uv run python -m tiny_duo_infer.cli \
+  --model-path ./models/qwen3-0.6b \
+  --prompt "What is attention in transformers?" \
+  --chat --max-new-tokens 64
+```
+
+## CLI
+
+Plain completion (Llama-3.2-1B):
 
 ```bash
 uv run python -m tiny_duo_infer.cli \
   --model-path ./models/llama-3.2-1b \
   --prompt "The capital of France is" \
-  --max-new-tokens 32 \
-  --temperature 0.0
+  --max-new-tokens 32 --temperature 0.0
 ```
 
-Qwen3 chat mode — wrap a plain prompt as a user message and apply the ChatML
-template:
-
-```bash
-uv run python -m tiny_duo_infer.cli \
-  --model-path ./models/qwen3-0.6b \
-  --prompt "What is the capital of France?" \
-  --chat \
-  --max-new-tokens 64 \
-  --temperature 0.7
-```
-
-Qwen3 chat mode with explicit system and user messages:
+Qwen3 chat with explicit messages:
 
 ```bash
 uv run python -m tiny_duo_infer.cli \
   --model-path ./models/qwen3-0.6b \
   --message system:"You are a concise assistant." \
-  --message user:"What is the capital of France?" \
-  --max-new-tokens 64 \
-  --temperature 0.7
+  --message user:"Explain KV cache in one paragraph." \
+  --max-new-tokens 128 --temperature 0.7
 ```
 
-Additional flags (all models):
-
-| Flag | Description |
-|---|---|
-| `--stop TEXT` | Stop when TEXT appears in output (repeatable). |
-| `--seed N` | Seed for deterministic probabilistic sampling. |
-| `--show-stats` | Write a 21-field timing/memory/context/quantization stats block to stderr after generation. Generated text stays on stdout. |
-| `--context-policy POLICY` | How to handle prompts that exceed the context budget. Choices: `allow_context_stop` (default), `reject`, `truncate_left`, `truncate_right`, `reserve_generation`. |
-| `--quantization MODE` | Weight-only quantization mode applied at model load. Choices: `none` (default, full precision), `int4`, `int8`. |
-| `--quant-group-size N` | Quantization group size along the input dimension. Default `64`. Must evenly divide every quantized weight's `in_features`. |
-
-Llama-3.2-1B is a base completion model. Chat mode (`--chat` or `--message`)
-raises an error for Llama because it has no chat template.
-
-Run Llama with INT4 weight-only quantization (full-precision generation
-remains the default when `--quantization` is omitted):
+INT4 weight-only quantization with stats:
 
 ```bash
 uv run python -m tiny_duo_infer.cli \
   --model-path ./models/llama-3.2-1b \
   --prompt "The capital of France is" \
-  --max-new-tokens 32 \
-  --temperature 0.0 \
-  --quantization int4 \
-  --quant-group-size 64 \
-  --show-stats
+  --max-new-tokens 32 --temperature 0.0 \
+  --quantization int4 --show-stats
 ```
 
-`--show-stats` reports the quantization mode and linear-weight memory
-(`linear_weight_full_precision_bytes` vs `linear_weight_runtime_bytes`)
-alongside timing, KV-cache memory, and context-budget accounting.
+**Key flags:**
+
+| Flag | Description |
+|---|---|
+| `--chat` | Wrap prompt as a user message and apply ChatML template (Qwen3 only). |
+| `--message ROLE:TEXT` | Explicit system/user messages (repeatable). |
+| `--quantization MODE` | `none` (default), `int4`, or `int8` weight-only quantization. |
+| `--quant-group-size N` | Group size along the input dimension. Default `64`. |
+| `--show-stats` | Print timing, KV-cache memory, and quantization stats to stderr. |
+| `--context-policy POLICY` | `allow_context_stop` (default), `reject`, `truncate_left`, `truncate_right`, `reserve_generation`. |
+| `--stop TEXT` | Stop when TEXT appears in output (repeatable). |
+| `--seed N` | Seed for deterministic sampling. |
 
 ## HTTP Server
 
-Start the single-request inference server:
+Start the server:
 
 ```bash
 uv run python -m tiny_duo_infer.serving.api \
@@ -112,31 +103,17 @@ uv run python -m tiny_duo_infer.serving.api \
   --max-seq-len 2048
 ```
 
-The HTTP entrypoint also accepts `--quantization {none,int4,int8}` and
-`--quant-group-size N`. The engine is loaded inside the worker thread so
-quantized weights stay on the MLX GPU stream that owns generation:
+Also accepts `--quantization {none,int4,int8}` and `--quant-group-size N`.
 
-```bash
-uv run python -m tiny_duo_infer.serving.api \
-  --model-path ./models/qwen3-0.6b \
-  --max-seq-len 2048 \
-  --quantization int8
-```
-
-Full-response generation (JSON):
+Full-response generation:
 
 ```bash
 curl -s http://127.0.0.1:8000/generate \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0, "context_policy": "allow_context_stop"}'
+  -d '{"prompt": "The capital of France is", "max_new_tokens": 16, "temperature": 0.0}'
 ```
 
-The response JSON includes a `stats` field with the full 26-field stats
-object (timing, token-budget, KV-cache memory, context policy, and
-weight-only quantization metadata). The CLI `--show-stats` prints a
-21-field summary to stderr; HTTP exposes all fields.
-
-Streaming generation (NDJSON, one JSON object per line):
+Streaming (NDJSON, one object per line):
 
 ```bash
 curl -s http://127.0.0.1:8000/generate/stream \
@@ -144,18 +121,9 @@ curl -s http://127.0.0.1:8000/generate/stream \
   -d '{"prompt": "Once upon a time", "max_new_tokens": 32}'
 ```
 
-Fragment chunks carry `{"done": false, "text": "..."}`. The final chunk is
-`{"done": true, "text": "...", "prompt_tokens": N, "generated_tokens": N,
-"stop_reason": "...", "stats": {...}}`.
+Health check: `curl http://127.0.0.1:8000/health`
 
-Server status:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-The server handles one request at a time. Concurrent requests receive a 503
-"server busy" response.
+The server handles one request at a time; concurrent requests receive a `503` response.
 
 ## Profiling
 
@@ -164,47 +132,24 @@ Measure latency, throughput, and KV-cache memory across prompt sets:
 ```bash
 uv run python scripts/profile_generation.py \
   --model-path ./models/qwen3-0.6b \
-  --max-seq-len 512 \
-  --max-new-tokens 64 \
-  --runs 5 \
-  --warmup-runs 1
+  --max-seq-len 512 --max-new-tokens 64 \
+  --runs 5 --warmup-runs 1
 ```
 
-Key flags:
+Add `--quantization int8` to compare quantized vs full-precision runs side by side.
+Use `--json` for machine-readable output.
 
-| Flag | Description |
-|---|---|
-| `--prompt TEXT` | Add a prompt to the set (repeatable). Uses built-in prompts if omitted. |
-| `--prompt-file PATH` | Load prompts from a file (one per line). |
-| `--runs N` | Number of timed runs per prompt (default 3). |
-| `--warmup-runs N` | Warmup runs to exclude from summary (default 1). |
-| `--context-policy POLICY` | Context-budget policy applied to every request. |
-| `--quantization MODE` | Weight-only quantization mode (`none`, `int4`, `int8`). Same flag as the CLI/HTTP entrypoints; lets one prompt set compare full-precision against INT8/INT4 runs. |
-| `--quant-group-size N` | Group size for quantized runs. Default `64`. |
-| `--json` | Emit a machine-readable JSON report to stdout (silences progress output). |
-
-The summary reports `min`, `p50`, `p95`, and `max` for TTFT, decode
-throughput, and KV-cache active memory. JSON output is versioned with
-`schema_version=2`; v2 adds quantization mode and linear-weight memory
-totals (`linear_weight_full_precision_bytes`,
-`linear_weight_runtime_bytes`) to `engine_info` so full-precision and
-quantized runs can be diffed directly.
-
-## Development Checks
-
-Install development dependencies:
+## Development
 
 ```bash
+# Install dev dependencies
 uv sync --group dev
-```
 
-Run the fast local test suite manually:
-
-```bash
+# Run tests
 uv run pytest -q
+
+# Check for whitespace issues
 git diff --check
 ```
 
-GitHub Actions runs the same fast regression gate on pushes and pull requests.
-Slow real-model smoke tests remain manual phase-close checks because they
-require local model artifacts and hardware.
+GitHub Actions runs the same test suite on every push and pull request.
